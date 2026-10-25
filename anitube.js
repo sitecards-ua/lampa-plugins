@@ -3,13 +3,13 @@
 // http://127.0.0.1:8765); the helper on the TV does the requests a page cannot (those that need a site's
 // Referer, MOON's stream). Source: Claude Space PC/LG-TV.
 // Built like Lampa's online plugins (online_mod by nb557, the BwaRC "Онлайн" plugin): a card button opens a
-// screen with the poster, "Джерело" (the site: AniTube, AnimeON, AnimeLib, YummyAnime), a Filter
+// screen with the poster, "Джерело" (the site: AniTube, AnimeON, AnimeLib, YummyAnime, YummyAni), a Filter
 // (title/season found there, voice-over), a search for one's own query and the list of episodes; an
 // episode plays in Lampa's own player with the voice-over's episodes as its playlist. The choice is
 // remembered per title. A site's result is taken only when its name and year match the card (names
 // include TMDB's English and alternative titles); the viewer's own search lists results to pick from.
 // Players: MOON (AniTube, AnimeON) — our helper reads each episode's signed HLS stream out of MOON's page;
-// Kodik (AnimeLib, YummyAnime) — its HLS links are read as online_mod does. ASHDI fails on this TV's 2018
+// Kodik (AnimeLib, YummyAnime, YummyAni) — its HLS links are read as online_mod does. ASHDI fails on this TV's 2018
 // certificates and FENIX does not start here. A new site is one more entry in SOURCES. ES5 for Chromium 53.
 (function () {
   'use strict';
@@ -25,23 +25,24 @@
     try { var x = new XMLHttpRequest(); x.open('POST', HELPER + '/log'); x.send('[anitube] ' + text); } catch (e) {}
   }
 
-  function request(url, done, post) {
+  function request(url, done, post, language) {
     var x = new XMLHttpRequest();
     x.open(post ? 'POST' : 'GET', url);
     if (post) x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+    if (language) x.setRequestHeader('Accept-Language', language);
     x.timeout = 20000;
     x.onload = function () { done(x.status === 200 ? null : 'HTTP ' + x.status, x.responseText); };
     x.onerror = function () { done('мережа недоступна (чи запущено «Наш браузер»?)'); };
     x.ontimeout = function () { done('сайт не відповідає'); };
     x.send(post || null);
   }
-  function getJson(url, done) {
+  function getJson(url, done, language) {
     request(url, function (error, text) {
       if (error) return done(error);
       var data;
       try { data = JSON.parse(text); } catch (e) { return done('незрозуміла відповідь сайту'); }
       done(null, data);
-    });
+    }, null, language);
   }
   function html(text) { return new DOMParser().parseFromString(text, 'text/html'); }
   function seasonOf(title) { var m = /(\d+)\s*сезон/i.exec(title || ''); return m ? +m[1] : 1; }
@@ -323,7 +324,44 @@
       });
     }
   };
-  var SOURCES = [ANITUBE, ANIMEON, ANIMELIB, YUMMY];
+  // YummyAni (yummyani.me, Russian): the site's public API api.yani.tv lists every episode of every
+  // voice-over with its player; the Kodik ones are taken.
+  var YANI = {
+    name: 'yani', title: 'YummyAni', api: 'https://api.yani.tv',
+    // The API names titles in the asking browser's language; the TV asks for Ukrainian, which gives the
+    // site's own Ukrainian names, unlike TMDB's — Russian ones match TMDB's Russian alternative title.
+    search: function (query, done) {
+      getJson(YANI.api + '/search?q=' + encodeURIComponent(query) + '&limit=20', function (error, data) {
+        if (error) return done(error);
+        done(null, ((data && data.response) || []).map(function (a) {
+          return {title: a.title, year: a.year || 0, season: seasonOf(a.title), id: a.anime_id};
+        }));
+      }, 'ru');
+    },
+    voices: function (item, done) {
+      getJson(YANI.api + '/anime/' + item.id + '/videos', function (error, data) {
+        if (error) return done(error);
+        var groups = {}, order = [];
+        ((data && data.response) || []).forEach(function (v) {
+          if (!v.data || !/kodik/i.test(v.data.player || '') || !v.iframe_url) return;
+          var dub = v.data.dubbing || 'Kodik', subs = /^Субтитр/i.test(dub), number = +v.number || 0;
+          var title = dub.replace(/^(Озвучка|Субтитры)\s+/i, '') + (subs ? ' (субтитри)' : '');
+          if (!groups[title]) { groups[title] = {title: title, subs: subs, episodes: [], seen: {}}; order.push(title); }
+          if (groups[title].seen[number]) return;
+          groups[title].seen[number] = true;
+          groups[title].episodes.push({title: number + ' серія', number: number, link: v.iframe_url});
+        });
+        done(null, order.map(function (t) {
+          var g = groups[t];
+          g.episodes.sort(function (a, b) { return a.number - b.number; });
+          return {title: g.title, subs: g.subs, episodes: g.episodes};
+        }).sort(bySubs));
+      });
+    },
+    queries: function (n) { return [n.ru, n.en, n.romaji]; },
+    stream: function (episode, done) { kodikStream(episode.link, done); }
+  };
+  var SOURCES = [ANITUBE, ANIMEON, ANIMELIB, YUMMY, YANI];
 
   // Sites search descriptions too, so a result counts only when one of its names matches the card's and its
   // year fits: a film within a year, a series from its first year on (later seasons come later).
