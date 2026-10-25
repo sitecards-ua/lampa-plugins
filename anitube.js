@@ -191,25 +191,63 @@
       filter.chosen('filter', chosen);
     };
 
+    // TMDB season of the chosen AniTube title ("… (2 сезон)"), for episode stills and names like online plugins.
+    var tmdb = {};
+    function season() {
+      var m = /(\d+)\s*сезон/i.exec(titles[titleIndex] ? titles[titleIndex].title : '');
+      return m ? +m[1] : 1;
+    }
+    function episodesInfo(done) {
+      var s = season();
+      if (!movie.name || !movie.id) return done([]);
+      if (tmdb[s]) return done(tmdb[s]);
+      var url = Lampa.TMDB.api('tv/' + movie.id + '/season/' + s + '?api_key=' + Lampa.TMDB.key() + '&language=uk');
+      new Lampa.Reguest().silent(url, function (json) { tmdb[s] = (json && json.episodes) || []; done(tmdb[s]); },
+        function () { tmdb[s] = []; done([]); });
+    }
+    function hash(index) {
+      var s = season();
+      return Lampa.Utils.hash([s, s > 10 ? ':' : '', index + 1, movie.original_title || movie.original_name].join(''));
+    }
+
     this.draw = function () {
       this.reset();
       this.buildFilter();
       var voice = voices[voiceIndex];
-      voice.episodes.forEach(function (episode, index) {
-        var item = Lampa.Template.get('cs_anitube_item', {title: episode.title, info: voice.title});
-        item.on('hover:enter', function () { _this.play(index); });
-        item.on('hover:focus', function (e) { last = e.target; scroll.update($(e.target), true); });
-        scroll.append(item);
+      var still = movie.backdrop_path ? Lampa.TMDB.image('t/p/w300' + movie.backdrop_path) : '';
+      episodesInfo(function (info) {
+        if (voices[voiceIndex] !== voice) return;
+        voice.episodes.forEach(function (episode, index) {
+          var e = info[index] || {};
+          var date = e.air_date ? e.air_date.split('-').reverse().join('.') : '';
+          var item = Lampa.Template.get('cs_anitube_item', {
+            title: episode.title, name: e.name && !/^(серія|епізод|episode)\s*\d+$/i.test(e.name) ? e.name : '',
+            info: voice.title, time: [e.runtime ? e.runtime + ' хв' : '', date].filter(Boolean).join(' · ')
+          });
+          var img = item.find('img')[0], src = e.still_path ? Lampa.TMDB.image('t/p/w300' + e.still_path) : still;
+          if (src) {
+            img.onload = function () { item.addClass('cs-anitube--loaded'); };
+            img.onerror = function () { img.src = './img/img_broken.svg'; };
+            img.src = src;
+          }
+          try { item.find('.cs-anitube__timeline').append(Lampa.Timeline.render(Lampa.Timeline.view(hash(index)))); } catch (error) {}
+          item.on('hover:enter', function () { _this.play(index); });
+          item.on('hover:focus', function (ev) { last = ev.target; scroll.update($(ev.target), true); });
+          scroll.append(item);
+        });
+        _this.loading(false);
       });
-      this.loading(false);
     };
 
     // Lampa's own player, the voice-over as its playlist. hls_type 'hlsjs': Lampa loads the stream with
     // hls.js in its page, since MOON's CDN answers only a real browser (the TV's own HLS player gets 403).
     this.play = function (index) {
       var voice = voices[voiceIndex], name = movie.title || movie.name || '';
-      var playlist = voice.episodes.map(function (e) {
-        return {title: name + ' · ' + e.title + ' · ' + voice.title, url: HELPER + '/moon/hls.m3u8?url=' + encodeURIComponent(e.file), hls_type: 'hlsjs'};
+      var playlist = voice.episodes.map(function (e, i) {
+        var item = {title: name + ' · ' + e.title + ' · ' + voice.title, url: HELPER + '/moon/hls.m3u8?url=' + encodeURIComponent(e.file), hls_type: 'hlsjs'};
+        // Lampa keeps the watch progress under the same key online plugins use, and the rows show it.
+        try { item.timeline = Lampa.Timeline.view(hash(i)); } catch (error) {}
+        return item;
       });
       log('play ' + playlist[index].title + ' ' + voice.episodes[index].file);
       Lampa.Player.play(playlist[index]);
@@ -284,11 +322,25 @@
   // For checks from the PC in our own browser (the same engine and network rules as Lampa).
   window.claudespaceAnitubeApi = {search: search, sources: sources};
   function init() {
-    // The episode row of online plugins (online_mod's template).
-    Lampa.Template.add('cs_anitube_item', '<div class="online selector"><div class="online__body">' +
-      '<div style="position:absolute;left:0;top:-0.3em;width:2.4em;height:2.4em"><svg style="height:2.4em;width:2.4em" viewBox="0 0 128 128" fill="none">' +
-      '<circle cx="64" cy="64" r="56" stroke="white" stroke-width="16"/><path d="M90.5 64.3827L50 87.7654L50 41L90.5 64.3827Z" fill="white"/></svg></div>' +
-      '<div class="online__title" style="padding-left:2.1em">{title}</div><div class="online__quality" style="padding-left:3.4em">{info}</div></div></div>');
+    // The episode row of online plugins ("prestige" look: still, title, episode name, progress).
+    Lampa.Template.add('cs_anitube_item', '<div class="cs-anitube selector">' +
+      '<div class="cs-anitube__img"><img alt=""></div>' +
+      '<div class="cs-anitube__body"><div class="cs-anitube__head"><div class="cs-anitube__title">{title}</div>' +
+      '<div class="cs-anitube__time">{time}</div></div><div class="cs-anitube__name">{name}</div>' +
+      '<div class="cs-anitube__timeline"></div><div class="cs-anitube__info">{info}</div></div></div>');
+    $('head').append('<style>' +
+      '.cs-anitube{position:relative;display:flex;background:rgba(0,0,0,.3);border-radius:.3em;margin-bottom:1.5em}' +
+      '.cs-anitube.focus::after{content:"";position:absolute;top:-.5em;left:-.5em;right:-.5em;bottom:-.5em;border:.3em solid #fff;border-radius:.7em}' +
+      '.cs-anitube__img{position:relative;width:13em;min-height:7.3em;flex-shrink:0;background:rgba(0,0,0,.3);border-radius:.3em;overflow:hidden}' +
+      '.cs-anitube__img img{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .3s}' +
+      '.cs-anitube--loaded .cs-anitube__img img{opacity:1}' +
+      '.cs-anitube__body{flex-grow:1;padding:1.2em;display:flex;flex-direction:column;min-width:0}' +
+      '.cs-anitube__head{display:flex;justify-content:space-between;align-items:center}' +
+      '.cs-anitube__title{font-size:1.7em;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}' +
+      '.cs-anitube__time{padding-left:2em;opacity:.7;white-space:nowrap}' +
+      '.cs-anitube__name{opacity:.7;margin-top:.3em;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}' +
+      '.cs-anitube__timeline{margin:.8em 0}.cs-anitube__info{opacity:.7;margin-top:auto}' +
+      '</style>');
     Lampa.Component.add('cs_anitube', component);
     Lampa.Listener.follow('full', addButton);
     log('loaded');
