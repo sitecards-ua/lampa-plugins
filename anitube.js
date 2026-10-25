@@ -34,20 +34,36 @@
   }
   function html(text) { return new DOMParser().parseFromString(text, 'text/html'); }
 
-  // Titles found by AniTube's own search: [{title, url}].
+  // Titles found by AniTube's own search: [{title, url, year}]. Each result is a .story block.
   function search(query, done) {
     request(SITE + '/index.php?do=search', function (error, text) {
       if (error) return done(error);
-      var seen = {}, out = [];
-      [].forEach.call(html(text).querySelectorAll('a[href]'), function (a) {
-        var href = a.getAttribute('href'), name = (a.textContent || '').replace(/\s+/g, ' ').trim();
-        if (!/^https?:\/\/anitube\.in\.ua\/\d+-[^\/]+\.html$/.test(href) || !name || /^Перегляд/.test(name) || seen[href]) return;
-        seen[href] = true;
-        out.push({title: name, url: href});
+      var out = [];
+      [].forEach.call(html(text).querySelectorAll('.story'), function (story) {
+        var a = story.querySelector('h2 a[href]'), year = story.querySelector('a[href*="/xfsearch/year/"]');
+        if (!a || !/^https?:\/\/anitube\.in\.ua\/\d+-[^\/]+\.html$/.test(a.getAttribute('href'))) return;
+        out.push({title: (a.textContent || '').replace(/\s+/g, ' ').trim(), url: a.getAttribute('href'), year: year ? +year.textContent : 0});
       });
       done(null, out);
     }, 'do=search&subaction=search&story=' + encodeURIComponent(query));
   }
+
+  // AniTube searches descriptions too, so a result counts only when its name matches the card's and
+  // its year fits: a film within a year, a series from its first year on (later seasons come later).
+  function plain(name) {
+    return String(name || '').toLowerCase().replace(/[ʼ’'`]/g, '').replace(/\(\s*\d+\s*сезон\s*\)|(^|\s)сезон\s*\d+|\(\s*фільм\s*\)/g, ' ')
+      .replace(/[^0-9a-zа-яіїєґё]+/g, ' ').trim();
+  }
+  function matches(result, movie) {
+    var name = plain(result.title), year = +String(movie.release_date || movie.first_air_date || '').slice(0, 4);
+    var same = [movie.title, movie.name, movie.original_title, movie.original_name].some(function (t) {
+      t = plain(t);
+      return t && (name === t || name.indexOf(t + ' ') === 0 || t.indexOf(name + ' ') === 0);
+    });
+    if (!same || !year || !result.year) return same;
+    return movie.name ? result.year >= year - 1 : Math.abs(result.year - year) <= 1;
+  }
+  function seasonOf(title) { var m = /(\d+)\s*сезон/i.exec(title); return m ? +m[1] : 1; }
 
   // Voice-overs with a MOON player on a title page: [{title, episodes: [{title, file}]}], dubbed first.
   function sources(pageUrl, done) {
@@ -146,18 +162,24 @@
       return this.render();
     };
 
-    // AniTube search by the original title first, then the local one.
+    // AniTube names titles in Ukrainian: search by the local title first, then the original one; keep
+    // only results that match the card (all seasons of a series), in season order.
     this.find = function () {
-      var queries = [movie.original_title, movie.original_name, movie.title, movie.name].filter(function (q, i, all) { return q && all.indexOf(q) === i; });
+      var queries = [movie.title, movie.name, movie.original_title, movie.original_name].filter(function (q, i, all) { return q && all.indexOf(q) === i; });
+      var seen = {}, found = [];
       (function next(i) {
-        if (i >= queries.length) return _this.empty('На AniTube нічого не знайдено');
-        search(queries[i], function (error, list) {
-          if (error) return _this.empty('AniTube: ' + error);
-          if (!list.length) return next(i + 1);
-          titles = list;
+        if (i >= queries.length) {
+          if (!found.length) return _this.empty('На AniTube немає «' + (movie.title || movie.name) + '»');
+          titles = found.sort(function (a, b) { return seasonOf(a.title) - seasonOf(b.title); });
           titleIndex = 0;
           titles.forEach(function (t, n) { if (t.url === saved.title) titleIndex = n; });
-          _this.loadSources();
+          return _this.loadSources();
+        }
+        search(queries[i], function (error, list) {
+          if (error) return _this.empty('AniTube: ' + error);
+          list.forEach(function (t) { if (!seen[t.url] && matches(t, movie)) { seen[t.url] = true; found.push(t); } });
+          log('search "' + queries[i] + '": ' + list.length + ' results, ' + found.length + ' match');
+          next(i + 1);
         });
       }(0));
     };
