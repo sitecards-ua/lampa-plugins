@@ -284,6 +284,7 @@
       titles = list.slice().sort(function (a, b) { return a.season - b.season; });
       titleIndex = titles.indexOf(list[index]);
       titles.forEach(function (t, n) { if (String(t.id) === saved.title) titleIndex = n; });
+      log('ui: title ' + titles[titleIndex].title);
       this.loadVoices();
     };
 
@@ -353,6 +354,7 @@
       var voice = voices[voiceIndex];
       if (!voice.episodes) {
         this.activity.loader(true);
+        log('ui: loading episodes of ' + voice.title);
         return voice.load(function (error, list) {
           if (error) return _this.empty(source.title + ': ' + error);
           voice.episodes = list;
@@ -432,6 +434,7 @@
       else {
         this.activity.loader(false);
         if (Lampa.Activity.active().activity === this.activity && this.inActivity()) this.activity.toggle();
+        log('ui: loading off, still loading ' + $('.activity--load').length + ', body ' + document.body.className);
       }
     };
     this.inActivity = function () {
