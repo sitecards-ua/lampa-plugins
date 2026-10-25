@@ -378,6 +378,8 @@
         });
       }
       if (!voice.episodes.length) return this.empty('У цієї озвучки ще немає серій');
+      // A film is one "episode" (AnimeON numbers it 0): call it by the card's name.
+      if (!movie.name && voice.episodes.length === 1) voice.episodes[0].title = name;
       var still = movie.backdrop_path ? Lampa.TMDB.image('t/p/w300' + movie.backdrop_path) : '';
       episodesInfo(function (info) {
         if (voices[voiceIndex] !== voice) return;
@@ -415,7 +417,7 @@
         });
       }
       var playlist = voice.episodes.map(function (episode) {
-        var cell = {title: name + ' · ' + episode.title + ' · ' + voice.title, hls_type: 'hlsjs'};
+        var cell = {title: [name, episode.title === name ? '' : episode.title, voice.title].filter(Boolean).join(' · '), hls_type: 'hlsjs'};
         // Lampa keeps the watch progress under the same key online plugins use, and the rows show it.
         try { cell.timeline = Lampa.Timeline.view(hash(episode.number)); } catch (error) {}
         cell.url = function (call) { stream(episode, function (url) { cell.url = url; call(); }); };
