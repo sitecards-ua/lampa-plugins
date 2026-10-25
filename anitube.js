@@ -47,6 +47,23 @@
   function seasonOf(title) { var m = /(\d+)\s*сезон/i.exec(title || ''); return m ? +m[1] : 1; }
   function moonPage(url) { var m = MOON.exec(url || ''); return m ? 'https://moonanime.art/iframe/' + m[1] : ''; }
   function moonStream(page) { return page ? HELPER + '/moon/hls.m3u8?url=' + encodeURIComponent(page) : ''; }
+  // MOON's HLS master (served by our helper) → done(error, best variant, {"1080p": url, …}) for Lampa's
+  // player: it starts at the best quality instead of hls.js's guess, and offers the others.
+  function moonVariants(page, done) {
+    var master = moonStream(page);
+    if (!master) return done('серія без плеєра MOON');
+    request(master, function (error, text) {
+      if (error) return done(error);
+      var lines = String(text).split(/\r?\n/), qualities = {}, best = 0, url = '';
+      lines.forEach(function (line, i) {
+        var m = /^#EXT-X-STREAM-INF:.*RESOLUTION=\d+x(\d+)/.exec(line), next = lines[i + 1];
+        if (!m || !/^https?:\/\//.test(next || '')) return;
+        qualities[qualityName(+m[1])] = next;
+        if (+m[1] > best) { best = +m[1]; url = next; }
+      });
+      done(null, url || master, url ? qualities : null);
+    });
+  }
   function bySubs(a, b) { return a.subs - b.subs; }
   function attr(el, name) { return el.getAttribute(name) || ''; }
 
@@ -72,12 +89,17 @@
         'bad_user=true', 'cdn_is_working=true', 'type=' + type[1], 'hash=' + hash[1], 'id=' + id[1], 'info=%7B%7D'].join('&');
       function links() {
         request(KODIK + kodikInfo, function (error, text) {
-          var json, best = 0;
+          var json, best = 0, qualities = {};
           try { json = JSON.parse(text); } catch (e) {}
           if (error || !json || !json.links) return done(error || 'Kodik не дав відео');
-          Object.keys(json.links).forEach(function (q) { if (+q > best && json.links[q][0]) best = +q; });
-          var url = best && kodikDecode(json.links[best][0].src);
-          done(url ? null : 'Kodik не дав відео', kodikUrl(url));
+          Object.keys(json.links).forEach(function (q) {
+            var src = json.links[q][0] && kodikDecode(json.links[q][0].src);
+            if (!src) return;
+            qualities[qualityName(+q)] = kodikUrl(src);
+            if (+q > best) best = +q;
+          });
+          var url = best && qualities[qualityName(best)];
+          done(url ? null : 'Kodik не дав відео', url, qualities);
         }, body);
       }
       if (kodikInfo) return links();
@@ -161,7 +183,7 @@
       });
     },
     queries: function (n) { return [n.uk, n.original]; },
-    stream: function (episode, done) { done(null, moonStream(moonPage(episode.page))); }
+    stream: function (episode, done) { moonVariants(moonPage(episode.page), done); }
   };
 
   // animeon.club: a JSON API (the site's own), with the English name and the season of each title.
@@ -201,8 +223,7 @@
     stream: function (episode, done) {
       getJson(ANIMEON.api + '/player/' + episode.id + '/episode', function (error, data) {
         if (error) return done(error);
-        var page = moonPage(data && data.videoUrl);
-        done(page ? null : 'серія без плеєра MOON', moonStream(page));
+        moonVariants(moonPage(data && data.videoUrl), done);
       });
     }
   };
@@ -320,6 +341,19 @@
     var year = +String(movie.release_date || movie.first_air_date || '').slice(0, 4);
     if (!same || !year || !result.year) return same;
     return movie.name ? result.year >= year - 1 : Math.abs(result.year - year) <= 1;
+  }
+
+  // The best quality a voice-over has, read from its first episode's stream (the qualities a source gives).
+  function qualityName(height) {
+    return height >= 2000 ? '4K' : height >= 1000 ? '1080p' : height >= 700 ? '720p' : height >= 470 ? '480p' : height ? height + 'p' : '';
+  }
+  function qualityRank(label) { return label === '4K' ? 2160 : parseInt(label, 10) || 0; }
+  function qualityOf(src, episode, done) {
+    src.stream(episode, function (error, url, qualities) {
+      var best = '';
+      Object.keys(qualities || {}).forEach(function (q) { if (qualityRank(q) > qualityRank(best)) best = q; });
+      done(error ? '' : best);
+    });
   }
 
   // The card's names for searching and matching: its Ukrainian and original ones, plus from TMDB the
@@ -583,7 +617,7 @@
           var date = e.air_date ? e.air_date.split('-').reverse().join('.') : '';
           var item = Lampa.Template.get('cs_anitube_item', {
             title: episode.title, name: e.name && !/^(серія|епізод|episode)\s*\d+$/i.test(e.name) ? e.name : '',
-            info: voice.title, time: [e.runtime ? e.runtime + ' хв' : '', date].filter(Boolean).join(' · ')
+            info: voice.title, time: [e.runtime ? e.runtime + ' хв' : '', date].filter(Boolean).join(' · '), quality: voice.quality || ''
           });
           var img = item.find('img')[0], src = e.still_path ? Lampa.TMDB.image('t/p/w300' + e.still_path) : episode.poster || still;
           if (src) {
@@ -597,6 +631,13 @@
           scroll.append(item);
         });
         _this.loading(false);
+        if (voice.quality === undefined) {
+          voice.quality = '';
+          qualityOf(source, voice.episodes[0], function (label) {
+            voice.quality = label;
+            if (voices[voiceIndex] === voice) scroll.render().find('.cs-anitube__quality').text(label);
+          });
+        }
       });
     };
 
@@ -605,22 +646,24 @@
     // with hls.js in its page, since MOON's CDN answers only a real browser (the TV's own player gets 403).
     this.play = function (index) {
       var voice = voices[voiceIndex], src = source;
+      // The best quality first; the others go to Lampa's quality menu.
       function stream(episode, call) {
-        src.stream(episode, function (error, url) {
+        src.stream(episode, function (error, url, qualities) {
           if (error || !url) log('no stream: ' + (error || 'no url'));
-          call(url || '', error);
+          call(url || '', error, qualities);
         });
       }
       var playlist = voice.episodes.map(function (episode) {
         var cell = {title: [name, episode.title === name ? '' : episode.title, voice.title].filter(Boolean).join(' · '), hls_type: 'hlsjs'};
         // Lampa keeps the watch progress under the same key online plugins use, and the rows show it.
         try { cell.timeline = Lampa.Timeline.view(hash(episode.number)); } catch (error) {}
-        cell.url = function (call) { stream(episode, function (url) { cell.url = url; call(); }); };
+        cell.url = function (call) { stream(episode, function (url, error, qualities) { cell.url = url; if (qualities) cell.quality = qualities; call(); }); };
         return cell;
       });
-      stream(voice.episodes[index], function (url, error) {
+      stream(voice.episodes[index], function (url, error, qualities) {
         if (!url) return Lampa.Noty.show('Не вдалося отримати відео цієї серії' + (error ? ': ' + error : ''));
         playlist[index].url = url;
+        if (qualities) playlist[index].quality = qualities;
         log('play ' + src.name + ' ' + playlist[index].title + ' ' + url);
         Lampa.Player.play(playlist[index]);
         Lampa.Player.playlist(playlist);
@@ -700,7 +743,8 @@
       '<div class="cs-anitube__img"><img alt=""></div>' +
       '<div class="cs-anitube__body"><div class="cs-anitube__head"><div class="cs-anitube__title">{title}</div>' +
       '<div class="cs-anitube__time">{time}</div></div><div class="cs-anitube__name">{name}</div>' +
-      '<div class="cs-anitube__timeline"></div><div class="cs-anitube__info">{info}</div></div></div>');
+      '<div class="cs-anitube__timeline"></div><div class="cs-anitube__footer"><div class="cs-anitube__info">{info}</div>' +
+      '<div class="cs-anitube__quality">{quality}</div></div></div></div>');
     Lampa.Template.add('cs_anitube_folder', '<div class="cs-anitube selector">' +
       '<div class="cs-anitube__body"><div class="cs-anitube__head"><div class="cs-anitube__title">{title}</div>' +
       '<div class="cs-anitube__time">{year}</div></div><div class="cs-anitube__name">{info}</div></div></div>');
@@ -715,7 +759,10 @@
       '.cs-anitube__title{font-size:1.7em;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}' +
       '.cs-anitube__time{padding-left:2em;opacity:.7;white-space:nowrap}' +
       '.cs-anitube__name{opacity:.7;margin-top:.3em;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}' +
-      '.cs-anitube__timeline{margin:.8em 0}.cs-anitube__info{opacity:.7;margin-top:auto}' +
+      '.cs-anitube__timeline{margin:.8em 0}.cs-anitube__info{opacity:.7}' +
+      '.cs-anitube__footer{display:flex;justify-content:space-between;align-items:center;margin-top:auto}' +
+      '.cs-anitube__quality{padding:.1em .5em;border:.1em solid rgba(255,255,255,.6);border-radius:.3em;font-size:.9em}' +
+      '.cs-anitube__quality:empty{display:none}' +
       '.cs-anitube-note{opacity:.7;margin:0 0 1.2em;font-size:1.2em}' +
       '</style>');
     Lampa.Component.add('cs_anitube', component);
