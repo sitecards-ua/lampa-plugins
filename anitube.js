@@ -1,15 +1,16 @@
 // Lampa plugin "Аніме UA" for the TV (file name anitube.js kept: Lampa already has its address). Lampa loads
 // it from GitHub Pages (lampa-plugins repository) or from our helper (browser-helper/helper.js,
-// http://127.0.0.1:8765); the helper on the TV does the requests a page cannot (AniTube's episode list,
-// MOON's stream). Source: Claude Space PC/LG-TV.
+// http://127.0.0.1:8765); the helper on the TV does the requests a page cannot (those that need a site's
+// Referer, MOON's stream). Source: Claude Space PC/LG-TV.
 // Built like Lampa's online plugins (online_mod by nb557, the BwaRC "Онлайн" plugin): a card button opens a
-// screen with the poster, "Джерело" (the site: AniTube, AnimeON), a Filter (title/season found there,
-// voice-over), a search for one's own query and the list of episodes; an episode plays in Lampa's own player
-// with the voice-over's episodes as its playlist. The choice is remembered per title. A site's result is
-// taken only when its name and year match the card; the viewer's own search lists results to pick from. Only
-// MOON is offered: our helper reads each episode's signed HLS stream out of MOON's page (/moon/hls.m3u8
-// serves its master). ASHDI fails on this TV's 2018 certificates and FENIX does not start here.
-// A new site is one more entry in SOURCES. ES5 for Chromium 53.
+// screen with the poster, "Джерело" (the site: AniTube, AnimeON, AnimeLib, YummyAnime), a Filter
+// (title/season found there, voice-over), a search for one's own query and the list of episodes; an
+// episode plays in Lampa's own player with the voice-over's episodes as its playlist. The choice is
+// remembered per title. A site's result is taken only when its name and year match the card (names
+// include TMDB's English and alternative titles); the viewer's own search lists results to pick from.
+// Players: MOON (AniTube, AnimeON) — our helper reads each episode's signed HLS stream out of MOON's page;
+// Kodik (AnimeLib, YummyAnime) — its HLS links are read as online_mod does. ASHDI fails on this TV's 2018
+// certificates and FENIX does not start here. A new site is one more entry in SOURCES. ES5 for Chromium 53.
 (function () {
   'use strict';
   if (window.claudespaceAnitube) return;
@@ -45,7 +46,71 @@
   function html(text) { return new DOMParser().parseFromString(text, 'text/html'); }
   function seasonOf(title) { var m = /(\d+)\s*сезон/i.exec(title || ''); return m ? +m[1] : 1; }
   function moonPage(url) { var m = MOON.exec(url || ''); return m ? 'https://moonanime.art/iframe/' + m[1] : ''; }
+  function moonStream(page) { return page ? HELPER + '/moon/hls.m3u8?url=' + encodeURIComponent(page) : ''; }
   function bySubs(a, b) { return a.subs - b.subs; }
+  function attr(el, name) { return el.getAttribute(name) || ''; }
+
+  // Kodik (the player of AnimeLib and YummyAnime), the way online_mod reads it: the episode's page carries
+  // urlParams and vInfo, the player script names the POST address (atob), the answer lists HLS links per
+  // quality, each ROT18 + base64. Its CDN allows any origin, so Lampa plays the link itself.
+  var KODIK = 'https://kodikplayer.com', kodikInfo = '';
+  function kodikUrl(link) { return /^\/\//.test(link) ? 'https:' + link : link; }
+  function kodikDecode(s) {
+    if (/^(https?:)?\/\//.test(s)) return s;
+    try { return atob(s.replace(/[a-zA-Z]/g, function (x) { return String.fromCharCode((x <= 'Z' ? 90 : 122) >= (x = x.charCodeAt(0) + 18) ? x : x - 26); })); } catch (e) { return ''; }
+  }
+  function kodikStream(link, done) {
+    request(kodikUrl(link), function (error, page) {
+      if (error) return done(error);
+      page = page.replace(/\n/g, '');
+      var params = /\burlParams = '([^']+)'/.exec(page), type = /\b(?:videoInfo|vInfo)\.type = '([^']+)'/.exec(page),
+        hash = /\b(?:videoInfo|vInfo)\.hash = '([^']+)'/.exec(page), id = /\b(?:videoInfo|vInfo)\.id = '([^']+)'/.exec(page),
+        script = /<script [^>]*\bsrc="(\/assets\/js\/app\.player_single[^"]+)"/.exec(page), p;
+      try { p = JSON.parse(params[1]); } catch (e) { return done('Kodik: незнайома сторінка плеєра'); }
+      if (!type || !hash || !id || !script) return done('Kodik: незнайома сторінка плеєра');
+      var body = ['d=' + p.d, 'd_sign=' + p.d_sign, 'pd=' + p.pd, 'pd_sign=' + p.pd_sign, 'ref=' + p.ref, 'ref_sign=' + p.ref_sign,
+        'bad_user=true', 'cdn_is_working=true', 'type=' + type[1], 'hash=' + hash[1], 'id=' + id[1], 'info=%7B%7D'].join('&');
+      function links() {
+        request(KODIK + kodikInfo, function (error, text) {
+          var json, best = 0;
+          try { json = JSON.parse(text); } catch (e) {}
+          if (error || !json || !json.links) return done(error || 'Kodik не дав відео');
+          Object.keys(json.links).forEach(function (q) { if (+q > best && json.links[q][0]) best = +q; });
+          var url = best && kodikDecode(json.links[best][0].src);
+          done(url ? null : 'Kodik не дав відео', kodikUrl(url));
+        }, body);
+      }
+      if (kodikInfo) return links();
+      request(KODIK + script[1], function (error, js) {
+        var m = !error && /\$\.ajax\({type: *"POST", *url: *atob\("([^"]+)"\)/.exec(js.replace(/\n/g, ''));
+        try { kodikInfo = m ? atob(m[1]) : ''; } catch (e) { kodikInfo = ''; }
+        if (!/^\//.test(kodikInfo)) { kodikInfo = ''; return done('Kodik: незнайомий плеєр'); }
+        links();
+      });
+    });
+  }
+  // A Kodik serial or film page: its voice-overs (each its own serial/film page) and the episodes of
+  // the one shown.
+  function kodikPage(link, done) {
+    request(kodikUrl(link), function (error, text) {
+      if (error) return done(error);
+      var doc = html(text), voices = [], episodes = [];
+      [].forEach.call(doc.querySelectorAll('option[data-media-id]'), function (o) {
+        var type = attr(o, 'data-media-type') || 'serial';
+        voices.push({title: attr(o, 'data-title') + (attr(o, 'data-translation-type') === 'subtitles' ? ' (субтитри)' : ''),
+          subs: attr(o, 'data-translation-type') === 'subtitles', link: KODIK + '/' + type + '/' + attr(o, 'data-media-id') + '/' + attr(o, 'data-media-hash') + '/720p'});
+      });
+      var seen = {};
+      [].forEach.call(doc.querySelectorAll('option[data-id][data-hash]'), function (o) {
+        // The page lists the episodes twice (two layouts).
+        if (seen[attr(o, 'data-id')]) return;
+        seen[attr(o, 'data-id')] = true;
+        var n = +o.getAttribute('value') || episodes.length + 1;
+        episodes.push({title: n + ' серія', number: n, link: KODIK + '/seria/' + attr(o, 'data-id') + '/' + attr(o, 'data-hash') + '/720p'});
+      });
+      done(null, voices, episodes);
+    });
+  }
 
   // Sites. Each one: search(query, done) → [{title, original, year, season, id}];
   // voices(item, done) → [{title, subs, episodes: [{title, number, poster}] or load(done) giving them}];
@@ -95,7 +160,8 @@
         });
       });
     },
-    page: function (episode, done) { done(null, moonPage(episode.page)); }
+    queries: function (n) { return [n.uk, n.original]; },
+    stream: function (episode, done) { done(null, moonStream(moonPage(episode.page))); }
   };
 
   // animeon.club: a JSON API (the site's own), with the English name and the season of each title.
@@ -131,15 +197,112 @@
         done(null, list.sort(bySubs));
       });
     },
-    page: function (episode, done) {
+    queries: function (n) { return [n.uk, n.en, n.original]; },
+    stream: function (episode, done) {
       getJson(ANIMEON.api + '/player/' + episode.id + '/episode', function (error, data) {
         if (error) return done(error);
         var page = moonPage(data && data.videoUrl);
-        done(page ? null : 'серія без плеєра MOON', page);
+        done(page ? null : 'серія без плеєра MOON', moonStream(page));
       });
     }
   };
-  var SOURCES = [ANITUBE, ANIMEON];
+
+  // Kodik voice-overs: episodes come from each voice-over's own Kodik page; a film is its page itself.
+  function kodikVoices(voices, episodes) {
+    return voices.map(function (v) {
+      return {title: v.title, subs: v.subs, load: function (ready) {
+        kodikPage(v.link, function (error, more, list) {
+          if (error) return ready(error);
+          ready(null, list.length ? list : [{title: '1 серія', number: 1, link: v.link}]);
+        });
+      }};
+    }).sort(bySubs);
+  }
+
+  // yummyanime.tv (Russian titles): a DLE site; the title page's player slot "Kodik" comes from its
+  // controller.php as a Kodik serial page with all voice-overs.
+  var YUMMY = {
+    name: 'yummy', title: 'YummyAnime', site: 'https://yummyanime.tv',
+    search: function (query, done) {
+      request(YUMMY.site + '/index.php?do=search', function (error, text) {
+        if (error) return done(error);
+        var out = [];
+        [].forEach.call(html(text).querySelectorAll('.movie-item'), function (item) {
+          var a = item.querySelector('a.movie-item__link[href]'), t = item.querySelector('.movie-item__title'), y = item.querySelector('.movie-item__meta');
+          if (!a || !t) return;
+          var title = (t.textContent || '').trim();
+          out.push({title: title, year: +((/(\d{4})/.exec(y ? y.textContent : '') || [0, 0])[1]), season: seasonOf(title), id: YUMMY.site + a.getAttribute('href').replace(/^https?:\/\/[^\/]+/, '')});
+        });
+        done(null, out);
+      }, 'do=search&subaction=search&story=' + encodeURIComponent(query));
+    },
+    voices: function (item, done) {
+      request(item.id, function (error, page) {
+        var id = !error && /data-player-anime-id="(\d+)"/.exec(page);
+        if (error || !id) return done(error || 'на сторінці немає плеєра');
+        (function slot(n) {
+          if (n > 3) return done('на сторінці немає плеєра Kodik');
+          // Through our helper: the site answers this request only with its own Referer.
+          getJson(HELPER + '/yummy/player?id=' + id[1] + '&slot=' + n, function (error, out) {
+            var src = out && out.data && out.data.src;
+            if (error || !src || !/kodik/.test(src)) return slot(n + 1);
+            kodikPage(src, function (error, voices, episodes) {
+              if (error) return done(error);
+              done(null, voices.length ? kodikVoices(voices, episodes) : [{title: 'Kodik', subs: false, episodes: episodes}]);
+            });
+          });
+        }(0));
+      });
+    },
+    queries: function (n) { return [n.ru, n.en, n.romaji]; },
+    stream: function (episode, done) { kodikStream(episode.link, done); }
+  };
+
+  // animelib.org (Russian site): its JSON API through our helper (it wants the site's Referer); every
+  // episode lists a Kodik player per voice-over team.
+  var ANIMELIB = {
+    name: 'animelib', title: 'AnimeLib', api: HELPER + '/animelib/api',
+    search: function (query, done) {
+      getJson(ANIMELIB.api + '/anime?q=' + encodeURIComponent(query), function (error, data) {
+        if (error) return done(error);
+        done(null, ((data && data.data) || []).map(function (a) {
+          return {title: a.rus_name || a.name, original: a.name, alt: [a.eng_name], year: +((/(\d{4})/.exec(a.releaseDateString || '') || [0, 0])[1]),
+            season: seasonOf(a.rus_name), id: a.slug_url};
+        }));
+      });
+    },
+    voices: function (item, done) {
+      getJson(ANIMELIB.api + '/episodes?anime_id=' + item.id, function (error, data) {
+        var list = (data && data.data) || [];
+        if (error || !list.length) return done(error || 'серій ще немає');
+        var episodes = list.map(function (e) { return {title: (e.number || '') + ' серія', number: +e.number || 0, name: e.name, id: e.id}; });
+        getJson(ANIMELIB.api + '/episodes/' + list[0].id, function (error, first) {
+          if (error) return done(error);
+          var seen = {}, voices = [];
+          (((first && first.data) || {}).players || []).forEach(function (p) {
+            var team = p.team && p.team.name;
+            if (p.player !== 'Kodik' || !team || seen[team]) return;
+            seen[team] = true;
+            var subs = /субтитр/i.test(p.translation_type && p.translation_type.label);
+            voices.push({title: team + (subs ? ' (субтитри)' : ''), team: team, subs: subs, episodes: episodes.map(function (e) {
+              return {title: e.title, number: e.number, id: e.id, team: team};
+            })});
+          });
+          done(null, voices.sort(bySubs));
+        });
+      });
+    },
+    queries: function (n) { return [n.en, n.romaji, n.ru]; },
+    stream: function (episode, done) {
+      getJson(ANIMELIB.api + '/episodes/' + episode.id, function (error, data) {
+        if (error) return done(error);
+        var player = (((data && data.data) || {}).players || []).filter(function (p) { return p.player === 'Kodik' && p.team && p.team.name === episode.team && p.src; })[0];
+        if (!player) return done('у цієї серії немає озвучки ' + episode.team);
+        kodikStream(player.src, done);
+      });
+    }
+  };
+  var SOURCES = [ANITUBE, ANIMEON, ANIMELIB, YUMMY];
 
   // Sites search descriptions too, so a result counts only when one of its names matches the card's and its
   // year fits: a film within a year, a series from its first year on (later seasons come later).
@@ -151,12 +314,37 @@
     a = plain(a); b = plain(b);
     return !!a && !!b && (a === b || a.indexOf(b + ' ') === 0 || b.indexOf(a + ' ') === 0);
   }
-  function matches(result, movie) {
-    var names = [movie.title, movie.name, movie.original_title, movie.original_name];
-    var same = [result.title, result.original].some(function (r) { return names.some(function (n) { return sameName(r, n); }); });
+  function matches(result, movie, names) {
+    names = names || [movie.title, movie.name, movie.original_title, movie.original_name];
+    var same = [result.title, result.original].concat(result.alt || []).some(function (r) { return names.some(function (n) { return sameName(r, n); }); });
     var year = +String(movie.release_date || movie.first_air_date || '').slice(0, 4);
     if (!same || !year || !result.year) return same;
     return movie.name ? result.year >= year - 1 : Math.abs(result.year - year) <= 1;
+  }
+
+  // The card's names for searching and matching: its Ukrainian and original ones, plus from TMDB the
+  // English one and the alternative titles (Russian ones for the Russian sites, romaji for AnimeLib).
+  var namesCache = {};
+  function cardNames(movie, done) {
+    var key = (movie.name ? 'tv' : 'movie') + movie.id;
+    if (namesCache[key]) return done(namesCache[key]);
+    var n = {uk: movie.title || movie.name, original: movie.original_title || movie.original_name, en: '', ru: '', romaji: '', all: []};
+    function finish() {
+      n.all = [n.uk, n.original, n.en, n.ru, n.romaji].concat(n.alts || []).filter(function (t, i, a) { return t && a.indexOf(t) === i; });
+      done(namesCache[key] = n);
+    }
+    if (!movie.id || movie.source && movie.source !== 'tmdb') return finish();
+    var url = Lampa.TMDB.api((movie.name ? 'tv/' : 'movie/') + movie.id + '?api_key=' + Lampa.TMDB.key() + '&language=en-US&append_to_response=alternative_titles');
+    new Lampa.Reguest().silent(url, function (json) {
+      var alts = json && json.alternative_titles ? json.alternative_titles.results || json.alternative_titles.titles || [] : [];
+      n.en = json && (json.name || json.title) || '';
+      alts.forEach(function (a) {
+        if (a.iso_3166_1 === 'RU' && !n.ru) n.ru = a.title;
+        if (a.iso_3166_1 === 'JP' && /^[\x00-\x7f]+$/.test(a.title) && !n.romaji) n.romaji = a.title;
+      });
+      n.alts = alts.map(function (a) { return a.title; }).slice(0, 30);
+      finish();
+    }, finish);
   }
 
   // Our helper runs only once "Наш браузер" has been opened since the TV was switched on. Lampa may not
@@ -259,7 +447,7 @@
             '. Якщо на сайті воно під іншою назвою — «Пошук» (лупа вгорі).');
         }
         _this.collect(order[i], null, function (all, sure) {
-          if (sure.length) { source = order[i]; return _this.useTitles(sure, 0); }
+          if (sure.length) { source = order[i]; return _this.useTitles(sure); }
           next(i + 1);
         });
       }(0));
@@ -268,20 +456,25 @@
     // A site's results for the card's names (local first: the sites name titles in Ukrainian), or for
     // the viewer's own query; done(all, sure), sure = those matching the card.
     this.collect = function (src, query, done) {
-      var queries = query ? [query] : [movie.title, movie.name, movie.original_title, movie.original_name]
-        .filter(function (q, i, all) { return q && all.indexOf(q) === i; });
-      var seen = {}, all = [], failed = '';
-      (function next(i) {
-        if (i >= queries.length) {
-          log(src.name + ' "' + queries.join('" "') + '": ' + all.length + ' results' + (failed ? ', ' + failed : ''));
-          return done(all, query ? [] : all.filter(function (t) { return matches(t, movie); }), failed);
-        }
-        src.search(queries[i], function (error, list) {
-          if (error) failed = error;
-          (list || []).forEach(function (t) { if (!seen[t.id]) { seen[t.id] = true; all.push(t); } });
-          next(i + 1);
-        });
-      }(0));
+      cardNames(movie, function (n) {
+        var queries = (query ? [query] : src.queries(n)).filter(function (q, i, all) { return q && all.indexOf(q) === i; });
+        var seen = {}, all = [], failed = '';
+        (function next(i) {
+          if (i >= queries.length) {
+            log(src.name + ' "' + queries.join('" "') + '": ' + all.length + ' results' + (failed ? ', ' + failed : ''));
+            all.forEach(function (t, i) {
+              t.order = i;
+              t.exact = [t.title, t.original].concat(t.alt || []).some(function (r) { return r && n.all.some(function (x) { return plain(r) === plain(x); }); });
+            });
+            return done(all, query ? [] : all.filter(function (t) { return matches(t, movie, n.all); }), failed);
+          }
+          src.search(queries[i], function (error, list) {
+            if (error) failed = error;
+            (list || []).forEach(function (t) { if (!seen[t.id]) { seen[t.id] = true; all.push(t); } });
+            next(i + 1);
+          });
+        }(0));
+      });
     };
 
     this.look = function (src, query) {
@@ -290,7 +483,7 @@
       this.buildFilter();
       this.activity.loader(true);
       this.collect(src, query, function (all, sure, failed) {
-        if (sure.length) return _this.useTitles(sure, 0);
+        if (sure.length) return _this.useTitles(sure);
         if (query && all.length === 1) return _this.useTitles(all, 0);
         if (query && all.length) return _this.similars(all);
         _this.empty(failed ? src.title + ': ' + failed : 'На ' + src.title + ' немає «' + (query || name) + '». Спробуйте інше джерело або «Пошук».');
@@ -298,9 +491,11 @@
     };
 
     this.useTitles = function (list, index) {
-      titles = list.slice().sort(function (a, b) { return a.season - b.season; });
-      titleIndex = titles.indexOf(list[index]);
-      titles.forEach(function (t, n) { if (String(t.id) === saved.title) titleIndex = n; });
+      // Seasons in order; within one, the title named exactly like the card before spin-offs.
+      titles = list.slice().sort(function (a, b) { return a.season - b.season || (b.exact ? 1 : 0) - (a.exact ? 1 : 0) || a.order - b.order; });
+      // A picked result stays picked; otherwise the one chosen before for this card, or the first season.
+      titleIndex = index === undefined ? 0 : titles.indexOf(list[index]);
+      if (index === undefined) titles.forEach(function (t, n) { if (String(t.id) === saved.title) titleIndex = n; });
       log(source.name + ' title ' + titles[titleIndex].title);
       this.loadVoices();
     };
@@ -411,9 +606,9 @@
     this.play = function (index) {
       var voice = voices[voiceIndex], src = source;
       function stream(episode, call) {
-        src.page(episode, function (error, page) {
-          if (error || !page) log('no stream: ' + (error || 'no page'));
-          call(page ? HELPER + '/moon/hls.m3u8?url=' + encodeURIComponent(page) : '');
+        src.stream(episode, function (error, url) {
+          if (error || !url) log('no stream: ' + (error || 'no url'));
+          call(url || '', error);
         });
       }
       var playlist = voice.episodes.map(function (episode) {
@@ -423,8 +618,8 @@
         cell.url = function (call) { stream(episode, function (url) { cell.url = url; call(); }); };
         return cell;
       });
-      stream(voice.episodes[index], function (url) {
-        if (!url) return Lampa.Noty.show('Не вдалося отримати відео цієї серії');
+      stream(voice.episodes[index], function (url, error) {
+        if (!url) return Lampa.Noty.show('Не вдалося отримати відео цієї серії' + (error ? ': ' + error : ''));
         playlist[index].url = url;
         log('play ' + src.name + ' ' + playlist[index].title + ' ' + url);
         Lampa.Player.play(playlist[index]);
@@ -498,7 +693,7 @@
     } catch (error) { log('button ' + error); }
   }
   // For checks from the PC in our own browser (the same engine and network rules as Lampa).
-  window.claudespaceAnitubeApi = {sources: SOURCES, matches: matches};
+  window.claudespaceAnitubeApi = {sources: SOURCES, matches: matches, cardNames: cardNames};
   function init() {
     // The episode row of online plugins ("prestige" look: still, title, episode name, progress).
     Lampa.Template.add('cs_anitube_item', '<div class="cs-anitube selector">' +
