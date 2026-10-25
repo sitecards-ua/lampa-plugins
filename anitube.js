@@ -6,7 +6,7 @@
 // screen with the poster, "Джерело" (the site: AniTube, AnimeON), a Filter (title/season found there,
 // voice-over), a search for one's own query and the list of episodes; an episode plays in Lampa's own player
 // with the voice-over's episodes as its playlist. The choice is remembered per title. A site's result is
-// taken only when its name and year match the card; otherwise the results are listed to pick from. Only
+// taken only when its name and year match the card; the viewer's own search lists results to pick from. Only
 // MOON is offered: our helper reads each episode's signed HLS stream out of MOON's page (/moon/hls.m3u8
 // serves its master). ASHDI fails on this TV's 2018 certificates and FENIX does not start here.
 // A new site is one more entry in SOURCES. ES5 for Chromium 53.
@@ -178,15 +178,33 @@
       bridge.call('luna://com.webos.applicationManager/launch', JSON.stringify({id: 'com.claudespace.tvbrowser', params: {returnTo: 'lampa.tv'}}));
     } catch (error) { log('open our browser failed: ' + error); }
   }
-  function wakeHelper(done) {
+  // The TV unloads Lampa while our browser is in front, so coming back starts Lampa anew on its home
+  // screen: the card is kept here and reopened by init() (with this screen) when that happens.
+  var RESUME_KEY = 'cs_anitube_resume';
+  function wakeHelper(movie, done) {
     ping(function (up) {
       if (up) return done(true);
+      Lampa.Storage.set(RESUME_KEY, {movie: movie, at: Date.now()});
       openOurBrowser();
       var tries = 0;
       (function wait() {
-        setTimeout(function () { ping(function (ok) { if (ok) return done(true); if (++tries < 25) wait(); else done(false); }); }, 1000);
+        setTimeout(function () {
+          ping(function (ok) {
+            if (ok) { Lampa.Storage.set(RESUME_KEY, {}); return done(true); }
+            if (++tries < 25) wait(); else done(false);
+          });
+        }, 1000);
       }());
     });
+  }
+  function resume() {
+    var saved = Lampa.Storage.get(RESUME_KEY, '{}') || {};
+    if (!saved.movie || !(Date.now() - saved.at < 120000)) return;
+    Lampa.Storage.set(RESUME_KEY, {});
+    var movie = saved.movie;
+    log('resume ' + (movie.title || movie.name));
+    Lampa.Activity.push({url: '', component: 'full', id: movie.id, method: movie.name ? 'tv' : 'movie', card: movie, source: movie.source || 'tmdb'});
+    setTimeout(function () { Lampa.Activity.push({url: '', title: 'Аніме UA', component: 'cs_anitube', movie: movie, page: 1}); }, 1500);
   }
 
   function component(object) {
@@ -221,28 +239,27 @@
       files.appendHead(filter.render());
       files.appendFiles(scroll.render());
       this.buildFilter();
-      wakeHelper(function (up) {
+      wakeHelper(movie, function (up) {
         if (up) _this.begin(); else _this.empty('Не вдалося запустити помічника. Відкрийте «Наш браузер», потім поверніться сюди.');
       });
       return this.render();
     };
 
-    // The site chosen for this card before, or else the first site where the title surely is.
+    // The site chosen for this card before, or else the first site where the title surely is. Results
+    // that do not match the card are offered only for the viewer's own search: on a card of a film that
+    // is not anime they would be other titles altogether.
     this.begin = function () {
       var chosen = SOURCES.filter(function (s) { return s.name === saved.source; })[0];
-      if (chosen) return this.look(chosen);
-      var loose = null;
+      var order = chosen ? [chosen].concat(SOURCES.filter(function (s) { return s !== chosen; })) : SOURCES;
       (function next(i) {
-        if (i >= SOURCES.length) {
-          if (loose) { source = loose.source; _this.buildFilter(); return _this.similars(loose.all); }
-          source = SOURCES[0];
+        if (i >= order.length) {
+          source = order[0];
           _this.buildFilter();
           return _this.empty('Немає «' + name + '» ні на ' + SOURCES.map(function (s) { return s.title; }).join(', ') +
-            '. Спробуйте «Пошук» з іншою назвою.');
+            '. Якщо на сайті воно під іншою назвою — «Пошук» (лупа вгорі).');
         }
-        _this.collect(SOURCES[i], null, function (all, sure) {
-          if (sure.length) { source = SOURCES[i]; return _this.useTitles(sure, 0); }
-          if (!loose && all.length) loose = {source: SOURCES[i], all: all};
+        _this.collect(order[i], null, function (all, sure) {
+          if (sure.length) { source = order[i]; return _this.useTitles(sure, 0); }
           next(i + 1);
         });
       }(0));
@@ -275,7 +292,7 @@
       this.collect(src, query, function (all, sure, failed) {
         if (sure.length) return _this.useTitles(sure, 0);
         if (query && all.length === 1) return _this.useTitles(all, 0);
-        if (all.length) return _this.similars(all);
+        if (query && all.length) return _this.similars(all);
         _this.empty(failed ? src.title + ': ' + failed : 'На ' + src.title + ' немає «' + (query || name) + '». Спробуйте інше джерело або «Пошук».');
       });
     };
@@ -284,14 +301,14 @@
       titles = list.slice().sort(function (a, b) { return a.season - b.season; });
       titleIndex = titles.indexOf(list[index]);
       titles.forEach(function (t, n) { if (String(t.id) === saved.title) titleIndex = n; });
-      log('ui: title ' + titles[titleIndex].title);
+      log(source.name + ' title ' + titles[titleIndex].title);
       this.loadVoices();
     };
 
     // No sure match: the site's results to pick from, like online_mod's "similars".
     this.similars = function (list) {
       this.reset();
-      scroll.append($('<div class="cs-anitube-note">Точного збігу на ' + source.title + ' немає — оберіть зі знайденого:</div>'));
+      scroll.append($('<div class="cs-anitube-note">Знайдено на ' + source.title + ' — оберіть:</div>'));
       list.forEach(function (t, index) {
         var item = Lampa.Template.get('cs_anitube_folder', {title: t.title, year: t.year || '', info: t.original && t.original !== t.title ? t.original : ''});
         item.on('hover:enter', function () { _this.useTitles(list, index); });
@@ -354,7 +371,6 @@
       var voice = voices[voiceIndex];
       if (!voice.episodes) {
         this.activity.loader(true);
-        log('ui: loading episodes of ' + voice.title);
         return voice.load(function (error, list) {
           if (error) return _this.empty(source.title + ': ' + error);
           voice.episodes = list;
@@ -433,9 +449,7 @@
       if (status) this.activity.loader(true);
       else {
         this.activity.loader(false);
-        if (Lampa.Activity.active().activity === this.activity && this.inActivity()) this.activity.toggle();
-        log('ui: loading off, still loading ' + $('.activity--load').length + ', body ' + document.body.className);
-      }
+        if (Lampa.Activity.active().activity === this.activity && this.inActivity()) this.activity.toggle();      }
     };
     this.inActivity = function () {
       var body = $('body');
@@ -510,6 +524,7 @@
     Lampa.Component.add('cs_anitube', component);
     Lampa.Listener.follow('full', addButton);
     log('loaded');
+    resume();
   }
   if (window.appready) init();
   else Lampa.Listener.follow('app', function (e) { if (e.type === 'ready') init(); });
