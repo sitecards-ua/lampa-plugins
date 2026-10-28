@@ -380,15 +380,16 @@
         done(null, out);
       }, 'do=search&subaction=search&story=' + encodeURIComponent(query));
     },
-    // Seasons stand for voice-overs here: each season's episodes come from one of its episode pages,
-    // which lists the whole season (the season page shows only the latest 20).
+    // One voice-over per season (the site names none), marked with its season for the screen's "Сезон"
+    // choice: each season's episodes come from one of its episode pages, which lists the whole season
+    // (the season page shows only the latest 20).
     voices: function (item, done) {
       request(item.id, function (error, page) {
         if (error) return done(error);
         var doc = html(page), seasons = [];
         [].forEach.call(doc.querySelectorAll('.all-sez a[href*="/sezon-"]'), function (a) {
           var n = +(/sezon-(\d+)/.exec(a.getAttribute('href')) || [0, 0])[1];
-          if (n) seasons.push({title: 'Сезон ' + n, season: n, subs: false, load: function (ready) { UAFLIX.season(item.id, n, ready); }});
+          if (n) seasons.push({title: 'UAFlix', season: n, subs: false, load: function (ready) { UAFLIX.season(item.id, n, ready); }});
         });
         if (seasons.length) return done(null, seasons);
         done(null, [{title: 'UAFlix', subs: false, episodes: [{title: '1 серія', number: 1, page: item.id}]}]);
@@ -466,7 +467,7 @@
     if (list[0].folder && list[0].folder[0] && list[0].folder[0].folder) {
       list.forEach(function (s, i) {
         var season = number(s.title, i + 1);
-        (s.folder || []).forEach(function (v) { out.push(voice((list.length > 1 ? 'Сезон ' + season + ' · ' : '') + v.title, episodes(v.folder), season)); });
+        (s.folder || []).forEach(function (v) { out.push(voice(v.title, episodes(v.folder), season)); });
       });
     } else if (list[0].folder) {
       list.forEach(function (v) { out.push(voice(v.title || name, episodes(v.folder))); });
@@ -694,7 +695,8 @@
 
     function remember() {
       var all = Lampa.Storage.get(CHOICE_KEY, '{}') || {};
-      saved = all[movie.id] = {source: source.name, title: titles[titleIndex] && String(titles[titleIndex].id), voice: voices[voiceIndex] && voices[voiceIndex].title};
+      saved = all[movie.id] = {source: source.name, title: titles[titleIndex] && String(titles[titleIndex].id), voice: voices[voiceIndex] && voices[voiceIndex].title,
+        season: voices[voiceIndex] && voices[voiceIndex].season};
       Lampa.Storage.set(CHOICE_KEY, all);
     }
 
@@ -707,6 +709,12 @@
         if (type === 'filter') {
           if (a.stype === 'title') { titleIndex = b.index; voiceIndex = 0; saved.voice = ''; _this.loadVoices(); }
           if (a.stype === 'voice') { voiceIndex = b.index; remember(); _this.draw(); }
+          // Another season keeps the voice-over when that season has it.
+          if (a.stype === 'season') {
+            var keep = voices[voiceIndex] && voices[voiceIndex].title, pick = -1;
+            voices.forEach(function (v, i) { if (v.season === b.season && (pick < 0 || v.title === keep && voices[pick].title !== keep)) pick = i; });
+            if (pick >= 0) { voiceIndex = pick; remember(); _this.draw(); }
+          }
         }
         setTimeout(function () { if ($('body').hasClass('selectbox--open')) Lampa.Select.close(); }, 10);
       };
@@ -749,6 +757,7 @@
         });
       }(0));
     };
+    function distinct(list) { var seen = {}, n = 0; list.forEach(function (v) { if (!seen[v.title]) { seen[v.title] = true; n++; } }); return n; }
     // The first title (season order, as useTitles), its voice-overs and the first one's best quality.
     function probe(src, sure, done) {
       var first = sure.slice().sort(function (a, b) { return a.season - b.season || (b.exact ? 1 : 0) - (a.exact ? 1 : 0) || a.order - b.order; })[0];
@@ -757,13 +766,13 @@
         // A voice-over whose episode will not play here (UAFlix's ASHDI-only season) says nothing of the
         // quality: up to three are tried.
         (function voice(k) {
-          if (k >= Math.min(list.length, 3)) return done({state: 'yes', voices: list.length, quality: ''});
+          if (k >= Math.min(list.length, 3)) return done({state: 'yes', voices: distinct(list), quality: ''});
           function episodes(ready) { if (list[k].episodes) return ready(null, list[k].episodes); list[k].load(ready); }
           episodes(function (error, eps) {
             if (error || !eps || !eps.length) return voice(k + 1);
             qualityOf(src, eps[0], function (label) {
               if (!label) return voice(k + 1);
-              done({state: 'yes', voices: list.length, quality: label});
+              done({state: 'yes', voices: distinct(list), quality: label});
             });
           });
         }(0));
@@ -844,7 +853,12 @@
       source.voices(titles[titleIndex], function (error, list) {
         voices = list || [];
         voiceIndex = 0;
-        voices.forEach(function (v, n) { if (v.title === saved.voice) voiceIndex = n; });
+        var found = false;
+        voices.forEach(function (v, n) {
+          if (found || v.title !== saved.voice) return;
+          voiceIndex = n;
+          found = !saved.season || v.season === saved.season;
+        });
         _this.buildFilter();
         if (error) return _this.empty(source.title + ': ' + error);
         if (!voices.length) return _this.empty('Тут немає плеєра MOON, а інші плеєри на цьому ТВ не працюють');
@@ -861,18 +875,36 @@
         return {title: title, subtitle: list[current] ? list[current].title : '', stype: stype,
           items: list.map(function (x, i) { return {title: x.title, selected: i === current, index: i}; })};
       }
-      var select = [];
+      var select = [], seasons = voiceSeasons(), now = voices[voiceIndex];
       if (titles.length) select.push(group('Тайтл на ' + source.title, 'title', titles, titleIndex));
-      if (voices.length) select.push(group('Озвучка', 'voice', voices, voiceIndex));
+      // A site with all seasons under one title (UAFlix, Eneyida): the season first, then the voice-overs
+      // of that season.
+      if (seasons.length) {
+        select.push({title: 'Сезон', subtitle: now ? 'Сезон ' + now.season : '', stype: 'season',
+          items: seasons.map(function (s) { return {title: 'Сезон ' + s, selected: now && now.season === s, season: s}; })});
+      }
+      if (voices.length) {
+        var mine = [];
+        voices.forEach(function (v, i) { if (!seasons.length || !now || v.season === now.season) mine.push({title: v.title, selected: i === voiceIndex, index: i}); });
+        select.push({title: 'Озвучка', subtitle: now ? now.title : '', stype: 'voice', items: mine});
+      }
       filter.set('filter', select);
       var chosen = [];
-      if (voices[voiceIndex]) chosen.push('Озвучка: ' + voices[voiceIndex].title);
+      if (now && seasons.length) chosen.push('Сезон ' + now.season);
+      if (now) chosen.push('Озвучка: ' + now.title);
       if (titles.length > 1) chosen.push(titles[titleIndex].title);
       filter.chosen('filter', chosen);
     };
 
     // TMDB season of the chosen title, for episode stills and names like online plugins.
-    // UAFlix keeps all seasons under one title and offers them as voice-overs, each with its season.
+    // UAFlix and Eneyida keep all seasons under one title: the voice-over carries its season.
+    // The seasons the voice-overs carry (UAFlix, Eneyida), in order; none for sites with a title per season.
+    function voiceSeasons() {
+      var out = [];
+      voices.forEach(function (v) { if (v.season && out.indexOf(v.season) < 0) out.push(v.season); });
+      return out.sort(function (a, b) { return a - b; });
+    }
+    function label(voice) { return (voice.season && voiceSeasons().length ? 'Сезон ' + voice.season + ' · ' : '') + voice.title; }
     function season() {
       if (voices[voiceIndex] && voices[voiceIndex].season) return voices[voiceIndex].season;
       return titles[titleIndex] ? titles[titleIndex].season || 1 : 1;
@@ -913,7 +945,7 @@
           var date = e.air_date ? e.air_date.split('-').reverse().join('.') : '';
           var item = Lampa.Template.get('cs_anitube_item', {
             title: episode.title, name: e.name && !/^(серія|епізод|episode)\s*\d+$/i.test(e.name) ? e.name : '',
-            info: voice.title, time: [e.runtime ? e.runtime + ' хв' : '', date].filter(Boolean).join(' · '), quality: voice.quality || ''
+            info: label(voice), time: [e.runtime ? e.runtime + ' хв' : '', date].filter(Boolean).join(' · '), quality: voice.quality || ''
           });
           var img = item.find('img')[0], src = e.still_path ? Lampa.TMDB.image('t/p/w300' + e.still_path) : episode.poster || still;
           if (src) {
@@ -950,7 +982,7 @@
         });
       }
       var playlist = voice.episodes.map(function (episode) {
-        var cell = {title: [name, episode.title === name ? '' : episode.title, voice.title].filter(Boolean).join(' · '), hls_type: 'hlsjs'};
+        var cell = {title: [name, episode.title === name ? '' : episode.title, label(voice)].filter(Boolean).join(' · '), hls_type: 'hlsjs'};
         // Lampa keeps the watch progress under the same key online plugins use, and the rows show it.
         try { cell.timeline = Lampa.Timeline.view(hash(episode.number)); } catch (error) {}
         cell.url = function (call) { stream(episode, function (url, error, qualities) { cell.url = url; if (qualities) cell.quality = qualities; call(); }); };
