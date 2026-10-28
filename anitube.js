@@ -3,13 +3,13 @@
 // http://127.0.0.1:8765); the helper on the TV does the requests a page cannot (those that need a site's
 // Referer, MOON's stream). Source: Claude Space PC/LG-TV.
 // Built like Lampa's online plugins (online_mod by nb557, the BwaRC "Онлайн" plugin): a card button opens a
-// screen with the poster, "Джерело" (the site: AniTube, AnimeON, AnimeLib, YummyAnime, YummyAni, UAFlix, Eneyida, BambooUA), a Filter
+// screen with the poster, "Джерело" (the site: AniTube, AnimeON, AnimeLib, YummyAnime, YummyAni, UAFlix, Eneyida, BambooUA, Unimay), a Filter
 // (title/season found there, voice-over), a search for one's own query and the list of episodes; an
 // episode plays in Lampa's own player with the voice-over's episodes as its playlist. The choice is
 // remembered per title. A site's result is taken only when its name and year match the card (names
 // include TMDB's English and alternative titles); the viewer's own search lists results to pick from.
 // Players: MOON (AniTube, AnimeON) — our helper reads each episode's signed HLS stream out of MOON's page;
-// Kodik (AnimeLib, YummyAnime, YummyAni) — its HLS links are read as online_mod does; ZetVideo (UAFlix), HDVB (Eneyida), BambooUA — plain HLS. ASHDI fails on this TV's 2018
+// Kodik (AnimeLib, YummyAnime, YummyAni) — its HLS links are read as online_mod does; ZetVideo (UAFlix), HDVB (Eneyida), BambooUA, Unimay — plain HLS. ASHDI fails on this TV's 2018
 // certificates and FENIX does not start here. A new site is one more entry in SOURCES. ES5 for Chromium 53.
 (function () {
   'use strict';
@@ -539,7 +539,36 @@
     queries: function (n) { return [n.uk, n.en, n.romaji]; },
     stream: function (episode, done) { hlsVariants(episode.file, done); }
   };
-  var SOURCES = [ANITUBE, ANIMEON, ANIMELIB, YUMMY, YANI, UAFLIX, ENEYIDA, BAMBOO];
+  // Unimay (unimay.media, a Ukrainian anime dubbing studio): its open JSON API lists each release's
+  // episodes with HLS streams per quality (any origin may read them); premium-only episodes have none.
+  var UNIMAY = {
+    name: 'unimay', title: 'Unimay', api: 'https://api.unimay.media/v1',
+    search: function (query, done) {
+      getJson(UNIMAY.api + '/release/search?title=' + encodeURIComponent(query) + '&page=0&size=20', function (error, data) {
+        if (error) return done(error);
+        done(null, ((data && data.content) || []).map(function (r) {
+          var n = r.names || {};
+          return {title: n.ukr || n.eng, original: n.romaji, alt: [n.eng], year: r.year || 0, season: seasonOf(n.ukr), id: r.code};
+        }));
+      });
+    },
+    voices: function (item, done) {
+      getJson(UNIMAY.api + '/release?code=' + encodeURIComponent(item.id), function (error, data) {
+        if (error) return done(error);
+        var episodes = ((data && data.playlist) || []).filter(function (e) { return e.hls && e.hls.qualities; }).map(function (e) {
+          return {title: e.number + ' серія', number: e.number, qualities: e.hls.qualities};
+        });
+        done(null, episodes.length ? [{title: 'Unimay', subs: false, episodes: episodes}] : []);
+      });
+    },
+    queries: function (n) { return [n.uk, n.en, n.romaji]; },
+    stream: function (episode, done) {
+      var names = {fhd: '1080p', hd: '720p', sd: '480p'}, qualities = {}, url = '';
+      ['sd', 'hd', 'fhd'].forEach(function (k) { if (episode.qualities[k]) { qualities[names[k]] = episode.qualities[k]; url = episode.qualities[k]; } });
+      done(url ? null : 'Unimay не дав відео', url, qualities);
+    }
+  };
+  var SOURCES = [ANITUBE, ANIMEON, ANIMELIB, YUMMY, YANI, UAFLIX, ENEYIDA, BAMBOO, UNIMAY];
 
   // Sites search descriptions too, so a result counts only when one of its names matches the card's and its
   // year fits: a film within a year, a series from its first year on (later seasons come later).
