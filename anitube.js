@@ -3,13 +3,13 @@
 // http://127.0.0.1:8765); the helper on the TV does the requests a page cannot (those that need a site's
 // Referer, MOON's stream). Source: Claude Space PC/LG-TV.
 // Built like Lampa's online plugins (online_mod by nb557, the BwaRC "Онлайн" plugin): a card button opens a
-// screen with the poster, "Джерело" (the site: AniTube, AnimeON, AnimeLib, YummyAnime, YummyAni, UAFlix), a Filter
+// screen with the poster, "Джерело" (the site: AniTube, AnimeON, AnimeLib, YummyAnime, YummyAni, UAFlix, Eneyida, BambooUA), a Filter
 // (title/season found there, voice-over), a search for one's own query and the list of episodes; an
 // episode plays in Lampa's own player with the voice-over's episodes as its playlist. The choice is
 // remembered per title. A site's result is taken only when its name and year match the card (names
 // include TMDB's English and alternative titles); the viewer's own search lists results to pick from.
 // Players: MOON (AniTube, AnimeON) — our helper reads each episode's signed HLS stream out of MOON's page;
-// Kodik (AnimeLib, YummyAnime, YummyAni) — its HLS links are read as online_mod does; ZetVideo (UAFlix) — plain HLS. ASHDI fails on this TV's 2018
+// Kodik (AnimeLib, YummyAnime, YummyAni) — its HLS links are read as online_mod does; ZetVideo (UAFlix), HDVB (Eneyida), BambooUA — plain HLS. ASHDI fails on this TV's 2018
 // certificates and FENIX does not start here. A new site is one more entry in SOURCES. ES5 for Chromium 53.
 (function () {
   'use strict';
@@ -425,22 +425,121 @@
         request(HELPER + '/zetvideo/vod/' + zet[1], function (error, text) {
           var file = !error && /file:"(https:\/\/zetvideo\.net\/[^"]+\.m3u8)"/.exec(text);
           if (!file) return done(error || 'ZetVideo не дав відео');
-          request(file[1], function (error, text) {
-            if (error) return done(error);
-            var lines = String(text).split(/\r?\n/), qualities = {}, best = 0, url = '';
-            lines.forEach(function (line, i) {
-              var m = /^#EXT-X-STREAM-INF:.*RESOLUTION=\d+x(\d+)/.exec(line), next = lines[i + 1];
-              if (!m || !/^https?:\/\//.test(next || '')) return;
-              qualities[qualityName(+m[1])] = next;
-              if (+m[1] > best) { best = +m[1]; url = next; }
-            });
-            done(null, url || file[1], url ? qualities : null);
-          });
+          hlsVariants(file[1], done);
         });
       });
     }
   };
-  var SOURCES = [ANITUBE, ANIMEON, ANIMELIB, YUMMY, YANI, UAFLIX];
+
+  // A plain HLS address (any origin may read it) → done(error, best variant, {"1080p": url, …}); a stream
+  // without variants is played as it is.
+  function hlsVariants(master, done) {
+    request(master, function (error, text) {
+      if (error) return done(error);
+      var lines = String(text).split(/\r?\n/), qualities = {}, best = 0, url = '';
+      lines.forEach(function (line, i) {
+        var m = /^#EXT-X-STREAM-INF:.*RESOLUTION=\d+x(\d+)/.exec(line), next = lines[i + 1];
+        if (!m || !/^https?:\/\//.test(next || '')) return;
+        qualities[qualityName(+m[1])] = next;
+        if (+m[1] > best) { best = +m[1]; url = next; }
+      });
+      done(null, url || master, url ? qualities : null);
+    });
+  }
+  // A Playerjs playlist (the "file" of HDVB's and BambooUA's players): a film's address, voice-overs
+  // with their file, voice-overs with episodes, or seasons → voice-overs → episodes. Gives voice-overs,
+  // each with its season when the playlist has seasons (as UAFlix's are).
+  function playerjsVoices(file, name) {
+    function number(title, n) { return +(/(\d+)/.exec(title || '') || [0, n])[1]; }
+    function episodes(list) {
+      return (list || []).filter(function (e) { return e.file; }).map(function (e, i) { return {title: number(e.title, i + 1) + ' серія', number: number(e.title, i + 1), file: e.file}; });
+    }
+    function voice(title, eps, season) {
+      var subs = /субтитр/i.test(title);
+      return {title: title + (subs && !/субтитр/i.test(title) ? ' (субтитри)' : ''), subs: subs, season: season, episodes: eps};
+    }
+    if (typeof file === 'string' && !/^\s*\[/.test(file)) return [voice(name, [{title: '1 серія', number: 1, file: file}])];
+    var list;
+    try { list = typeof file === 'string' ? JSON.parse(file) : file; } catch (e) { return []; }
+    if (!list || !list.length) return [];
+    var out = [];
+    if (list[0].folder && list[0].folder[0] && list[0].folder[0].folder) {
+      list.forEach(function (s, i) {
+        var season = number(s.title, i + 1);
+        (s.folder || []).forEach(function (v) { out.push(voice((list.length > 1 ? 'Сезон ' + season + ' · ' : '') + v.title, episodes(v.folder), season)); });
+      });
+    } else if (list[0].folder) {
+      list.forEach(function (v) { out.push(voice(v.title || name, episodes(v.folder))); });
+    } else {
+      list.forEach(function (v) { if (v.file) out.push(voice(v.title || name, [{title: '1 серія', number: 1, file: v.file}])); });
+    }
+    return out.filter(function (v) { return v.episodes.length; }).sort(bySubs);
+  }
+
+  // Eneyida (eneyida.tv, Ukrainian films and series): a DLE site whose player is HDVB (hdvbua.pro) — its
+  // page holds the whole Playerjs playlist, and the streams are plain HLS that any origin may read.
+  var ENEYIDA = {
+    name: 'eneyida', title: 'Eneyida', site: 'https://eneyida.tv',
+    search: function (query, done) {
+      request(ENEYIDA.site + '/index.php?do=search', function (error, text) {
+        if (error) return done(error);
+        var out = [];
+        [].forEach.call(html(text).querySelectorAll('article.short'), function (item) {
+          var a = item.querySelector('a.short_title[href]'), sub = item.querySelector('.short_subtitle');
+          if (!a || !/^https:\/\/eneyida\.tv\/\d+-[^\/]+\.html$/.test(a.getAttribute('href'))) return;
+          // "2022 • From"
+          var parts = (sub ? sub.textContent : '').split('•'), title = (a.textContent || '').trim();
+          out.push({title: title, original: (parts[1] || '').trim(), year: +((/(\d{4})/.exec(parts[0] || '') || [0, 0])[1]), season: 1, id: a.getAttribute('href')});
+        });
+        done(null, out);
+      }, 'do=search&subaction=search&story=' + encodeURIComponent(query));
+    },
+    voices: function (item, done) {
+      request(item.id, function (error, page) {
+        var embed = !error && /<iframe[^>]+src="(https:\/\/hdvbua\.pro\/embed\/[^"]+)"/.exec(page);
+        if (error || !embed) return done(error || 'на сторінці немає плеєра HDVB');
+        request(embed[1].replace(/&amp;/g, '&'), function (error, player) {
+          if (error) return done(error);
+          var file = /\bfile:\s*'(\[[\s\S]*?\])'/.exec(player) || /\bfile:\s*"([^"]+)"/.exec(player);
+          if (!file) return done('HDVB не дав відео');
+          done(null, playerjsVoices(file[1], 'Eneyida'));
+        });
+      });
+    },
+    queries: function (n) { return [n.uk, n.en, n.original]; },
+    stream: function (episode, done) { hlsVariants(episode.file, done); }
+  };
+
+  // BambooUA (bambooua.com: anime, dorama, Asian films, mostly subtitled): a DLE site; the title page
+  // holds its Playerjs playlist (voice-over or subtitles → episodes) with plain HLS streams.
+  var BAMBOO = {
+    name: 'bamboo', title: 'BambooUA', site: 'https://bambooua.com',
+    search: function (query, done) {
+      request(BAMBOO.site + '/index.php?do=search&subaction=search&story=' + encodeURIComponent(query), function (error, text) {
+        if (error) return done(error);
+        var out = [], seen = {};
+        [].forEach.call(html(text).querySelectorAll('.cat-item'), function (item) {
+          var a = item.querySelector('a.link-title[href]'), h = item.querySelector('.title h2'), href = a && a.getAttribute('href');
+          var slug = /^https:\/\/bambooua\.com\/(?:anime|cinema|dorama|lakorn|tv-show|lgbtq)\/\d+-([a-z0-9-]+)\.html$/.exec(href || '');
+          if (!slug || !h || seen[href]) return;
+          seen[href] = true;
+          // The address carries the English name ("the-summer-hikaru-died"); the search page shows no year.
+          out.push({title: (h.textContent || '').trim(), alt: [slug[1].replace(/-/g, ' ')], year: 0, season: 1, id: href});
+        });
+        done(null, out);
+      });
+    },
+    voices: function (item, done) {
+      request(item.id, function (error, page) {
+        var list = !error && /\bplaylist\s*=\s*(\[.*\]);/.exec(page);
+        if (error || !list) return done(error || 'на сторінці немає плеєра');
+        done(null, playerjsVoices(list[1], 'BambooUA'));
+      });
+    },
+    queries: function (n) { return [n.uk, n.en, n.romaji]; },
+    stream: function (episode, done) { hlsVariants(episode.file, done); }
+  };
+  var SOURCES = [ANITUBE, ANIMEON, ANIMELIB, YUMMY, YANI, UAFLIX, ENEYIDA, BAMBOO];
 
   // Sites search descriptions too, so a result counts only when one of its names matches the card's and its
   // year fits: a film within a year, a series from its first year on (later seasons come later).
