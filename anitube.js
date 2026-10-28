@@ -3,13 +3,13 @@
 // http://127.0.0.1:8765); the helper on the TV does the requests a page cannot (those that need a site's
 // Referer, MOON's stream). Source: Claude Space PC/LG-TV.
 // Built like Lampa's online plugins (online_mod by nb557, the BwaRC "Онлайн" plugin): a card button opens a
-// screen with the poster, "Джерело" (the site: AniTube, AnimeON, AnimeLib, YummyAnime, YummyAni), a Filter
+// screen with the poster, "Джерело" (the site: AniTube, AnimeON, AnimeLib, YummyAnime, YummyAni, UAFlix), a Filter
 // (title/season found there, voice-over), a search for one's own query and the list of episodes; an
 // episode plays in Lampa's own player with the voice-over's episodes as its playlist. The choice is
 // remembered per title. A site's result is taken only when its name and year match the card (names
 // include TMDB's English and alternative titles); the viewer's own search lists results to pick from.
 // Players: MOON (AniTube, AnimeON) — our helper reads each episode's signed HLS stream out of MOON's page;
-// Kodik (AnimeLib, YummyAnime, YummyAni) — its HLS links are read as online_mod does. ASHDI fails on this TV's 2018
+// Kodik (AnimeLib, YummyAnime, YummyAni) — its HLS links are read as online_mod does; ZetVideo (UAFlix) — plain HLS. ASHDI fails on this TV's 2018
 // certificates and FENIX does not start here. A new site is one more entry in SOURCES. ES5 for Chromium 53.
 (function () {
   'use strict';
@@ -361,7 +361,86 @@
     queries: function (n) { return [n.ru, n.en, n.romaji]; },
     stream: function (episode, done) { kodikStream(episode.link, done); }
   };
-  var SOURCES = [ANITUBE, ANIMEON, ANIMELIB, YUMMY, YANI];
+  // UAFlix (uafix.net, Ukrainian films and series): a DLE site; a title holds all its seasons, each
+  // episode is its own page with one player — ZetVideo (plain HLS, any origin) or ASHDI (fails here).
+  // ZetVideo's page names the stream only with UAFlix's Referer, so our helper fetches it.
+  var UAFLIX = {
+    name: 'uaflix', title: 'UAFlix', site: 'https://uafix.net',
+    search: function (query, done) {
+      request(UAFLIX.site + '/index.php?do=search', function (error, text) {
+        if (error) return done(error);
+        var out = [];
+        [].forEach.call(html(text).querySelectorAll('a.sres-wrap[href]'), function (a) {
+          var h = a.querySelector('h2'), href = a.getAttribute('href');
+          if (!h || !/^https:\/\/uafix\.net\/(films|serials|anime|cartoons|dorama)\//.test(href)) return;
+          // "Українська / Original / English"; the search page shows no year.
+          var names = (h.textContent || '').split(' / ').map(function (s) { return s.trim(); });
+          out.push({title: names[0], original: names[1], alt: names.slice(2), year: 0, season: 1, id: href});
+        });
+        done(null, out);
+      }, 'do=search&subaction=search&story=' + encodeURIComponent(query));
+    },
+    // Seasons stand for voice-overs here: each season's episodes come from one of its episode pages,
+    // which lists the whole season (the season page shows only the latest 20).
+    voices: function (item, done) {
+      request(item.id, function (error, page) {
+        if (error) return done(error);
+        var doc = html(page), seasons = [];
+        [].forEach.call(doc.querySelectorAll('.all-sez a[href*="/sezon-"]'), function (a) {
+          var n = +(/sezon-(\d+)/.exec(a.getAttribute('href')) || [0, 0])[1];
+          if (n) seasons.push({title: 'Сезон ' + n, season: n, subs: false, load: function (ready) { UAFLIX.season(item.id, n, ready); }});
+        });
+        if (seasons.length) return done(null, seasons);
+        done(null, [{title: 'UAFlix', subs: false, episodes: [{title: '1 серія', number: 1, page: item.id}]}]);
+      });
+    },
+    season: function (title, n, ready) {
+      var path = title.replace(/^https:\/\/[^\/]+/, '').replace(/\/$/, ''), mark = '/season-' + (n < 10 ? '0' : '') + n + '-episode-';
+      function episodes(text) {
+        var seen = {}, list = [];
+        [].forEach.call(html(text).querySelectorAll('a[href*="' + path + mark + '"]'), function (a) {
+          var number = +(/-episode-(\d+)/.exec(a.getAttribute('href')) || [0, 0])[1];
+          if (!number || seen[number]) return;
+          seen[number] = true;
+          list.push({title: number + ' серія', number: number, page: UAFLIX.site + path + mark + (number < 10 ? '0' : '') + number + '/'});
+        });
+        return list.sort(function (a, b) { return a.number - b.number; });
+      }
+      request(UAFLIX.site + path + '/sezon-' + n + '/', function (error, text) {
+        if (error) return ready(error);
+        var some = episodes(text);
+        if (!some.length) return ready(null, []);
+        request(some[0].page, function (error, text) {
+          var all = error ? [] : episodes(text);
+          ready(null, all.length > some.length ? all : some);
+        });
+      });
+    },
+    queries: function (n) { return [n.uk, n.en, n.original]; },
+    stream: function (episode, done) {
+      request(episode.page, function (error, page) {
+        if (error) return done(error);
+        var zet = /<iframe[^>]+src="https:\/\/zetvideo\.net\/vod\/(\d+)/.exec(page);
+        if (!zet) return done(/ashdi\./.test(page) ? 'ця серія на UAFlix лише в плеєрі ASHDI, він на цьому ТВ не працює' : 'на сторінці немає плеєра');
+        request(HELPER + '/zetvideo/vod/' + zet[1], function (error, text) {
+          var file = !error && /file:"(https:\/\/zetvideo\.net\/[^"]+\.m3u8)"/.exec(text);
+          if (!file) return done(error || 'ZetVideo не дав відео');
+          request(file[1], function (error, text) {
+            if (error) return done(error);
+            var lines = String(text).split(/\r?\n/), qualities = {}, best = 0, url = '';
+            lines.forEach(function (line, i) {
+              var m = /^#EXT-X-STREAM-INF:.*RESOLUTION=\d+x(\d+)/.exec(line), next = lines[i + 1];
+              if (!m || !/^https?:\/\//.test(next || '')) return;
+              qualities[qualityName(+m[1])] = next;
+              if (+m[1] > best) { best = +m[1]; url = next; }
+            });
+            done(null, url || file[1], url ? qualities : null);
+          });
+        });
+      });
+    }
+  };
+  var SOURCES = [ANITUBE, ANIMEON, ANIMELIB, YUMMY, YANI, UAFLIX];
 
   // Sites search descriptions too, so a result counts only when one of its names matches the card's and its
   // year fits: a film within a year, a series from its first year on (later seasons come later).
@@ -369,9 +448,16 @@
     return String(name || '').toLowerCase().replace(/[ʼ’'`]/g, '').replace(/\(?\s*\d+\s*сезон\s*\)?|(^|\s)сезон\s*\d+|\(\s*фільм\s*\)/g, ' ')
       .replace(/[^0-9a-zа-яіїєґё]+/g, ' ').trim();
   }
+  // Equal names, or one continuing the other ("Магічна битва" — "Магічна битва 0"). A one-word name may
+  // be continued only by a season, part or film mark: "From" is not "From Old Country Bumpkin…".
+  var SEQUEL = /^(\d+|[ivx]+|сезон|season|частина|часть|part|фільм|фильм|film|movie|the movie|tv|ova|ona|special|спешл)( |$)/;
   function sameName(a, b) {
     a = plain(a); b = plain(b);
-    return !!a && !!b && (a === b || a.indexOf(b + ' ') === 0 || b.indexOf(a + ' ') === 0);
+    if (!a || !b) return false;
+    if (a === b) return true;
+    var short = a.length < b.length ? a : b, long = short === a ? b : a;
+    if (long.indexOf(short + ' ') !== 0) return false;
+    return short.indexOf(' ') > 0 || SEQUEL.test(long.slice(short.length + 1));
   }
   function matches(result, movie, names) {
     names = names || [movie.title, movie.name, movie.original_title, movie.original_name];
@@ -618,7 +704,11 @@
     };
 
     // TMDB season of the chosen title, for episode stills and names like online plugins.
-    function season() { return titles[titleIndex] ? titles[titleIndex].season || 1 : 1; }
+    // UAFlix keeps all seasons under one title and offers them as voice-overs, each with its season.
+    function season() {
+      if (voices[voiceIndex] && voices[voiceIndex].season) return voices[voiceIndex].season;
+      return titles[titleIndex] ? titles[titleIndex].season || 1 : 1;
+    }
     function episodesInfo(done) {
       var s = season();
       if (!movie.name || !movie.id) return done([]);
