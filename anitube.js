@@ -690,6 +690,7 @@
     var name = movie.title || movie.name || '';
     var source = ANITUBE, titles = [], voices = [], titleIndex = 0, voiceIndex = 0, last = null, tmdb = {};
     var saved = (Lampa.Storage.get(CHOICE_KEY, '{}') || {})[movie.id] || {};
+    var avail = {}, destroyed = false;
 
     function remember() {
       var all = Lampa.Storage.get(CHOICE_KEY, '{}') || {};
@@ -722,22 +723,60 @@
     // The site chosen for this card before, or else the first site where the title surely is. Results
     // that do not match the card are offered only for the viewer's own search: on a card of a film that
     // is not anime they would be other titles altogether.
+    // Every site is checked in turn, in the background too once one is shown: whether the title is there,
+    // how many voice-overs and the best quality of the first one. "Джерело" lists it under each site.
     this.begin = function () {
       var chosen = SOURCES.filter(function (s) { return s.name === saved.source; })[0];
       var order = chosen ? [chosen].concat(SOURCES.filter(function (s) { return s !== chosen; })) : SOURCES;
+      var shown = false;
       (function next(i) {
+        if (destroyed) return;
         if (i >= order.length) {
+          log('availability ' + SOURCES.map(function (s) { return s.name + ':' + availText(s); }).join(', '));
+          if (shown) return;
           source = order[0];
           _this.buildFilter();
           return _this.empty('Немає «' + name + '» ні на ' + SOURCES.map(function (s) { return s.title; }).join(', ') +
             '. Якщо на сайті воно під іншою назвою — «Пошук» (лупа вгорі).');
         }
-        _this.collect(order[i], null, function (all, sure) {
-          if (sure.length) { source = order[i]; return _this.useTitles(sure); }
-          next(i + 1);
+        var src = order[i];
+        if (avail[src.name] && avail[src.name].state !== 'wait') return next(i + 1);
+        avail[src.name] = {state: 'wait'};
+        _this.collect(src, null, function (all, sure, failed) {
+          if (!sure.length) { avail[src.name] = {state: failed ? 'error' : 'no', error: failed}; _this.buildFilter(); return next(i + 1); }
+          if (!shown) { shown = true; source = src; _this.useTitles(sure); }
+          probe(src, sure, function (state) { avail[src.name] = state; if (!destroyed) _this.buildFilter(); next(i + 1); });
         });
       }(0));
     };
+    // The first title (season order, as useTitles), its voice-overs and the first one's best quality.
+    function probe(src, sure, done) {
+      var first = sure.slice().sort(function (a, b) { return a.season - b.season || (b.exact ? 1 : 0) - (a.exact ? 1 : 0) || a.order - b.order; })[0];
+      src.voices(first, function (error, list) {
+        if (error || !list || !list.length) return done({state: error ? 'error' : 'none', error: error});
+        // A voice-over whose episode will not play here (UAFlix's ASHDI-only season) says nothing of the
+        // quality: up to three are tried.
+        (function voice(k) {
+          if (k >= Math.min(list.length, 3)) return done({state: 'yes', voices: list.length, quality: ''});
+          function episodes(ready) { if (list[k].episodes) return ready(null, list[k].episodes); list[k].load(ready); }
+          episodes(function (error, eps) {
+            if (error || !eps || !eps.length) return voice(k + 1);
+            qualityOf(src, eps[0], function (label) {
+              if (!label) return voice(k + 1);
+              done({state: 'yes', voices: list.length, quality: label});
+            });
+          });
+        }(0));
+      });
+    }
+    function availText(s) {
+      var a = avail[s.name];
+      if (!a || a.state === 'wait') return '… перевіряю';
+      if (a.state === 'no') return '— немає';
+      if (a.state === 'none') return '— є, але без плеєра для ТВ';
+      if (a.state === 'error') return '⚠ ' + (a.error || 'помилка');
+      return '✓ ' + [a.quality || 'якість невідома', a.voices + (a.voices === 1 ? ' озвучка' : a.voices < 5 ? ' озвучки' : ' озвучок')].join(' · ');
+    }
 
     // A site's results for the card's names (local first: the sites name titles in Ukrainian), or for
     // the viewer's own query; done(all, sure), sure = those matching the card.
@@ -815,8 +854,9 @@
     };
 
     this.buildFilter = function () {
-      filter.set('sort', SOURCES.map(function (s) { return {title: s.title, source: s.name, selected: s === source}; }));
-      filter.chosen('sort', [source.title]);
+      filter.set('sort', SOURCES.map(function (s) { return {title: s.title, subtitle: availText(s), source: s.name, selected: s === source}; }));
+      var mine = avail[source.name];
+      filter.chosen('sort', [source.title + (mine && mine.quality ? ' · ' + mine.quality : '')]);
       function group(title, stype, list, current) {
         return {title: title, subtitle: list[current] ? list[current].title : '', stype: stype,
           items: list.map(function (x, i) { return {title: x.title, selected: i === current, index: i}; })};
@@ -972,7 +1012,7 @@
     this.render = function () { return files.render(); };
     this.pause = function () {};
     this.stop = function () {};
-    this.destroy = function () { files.destroy(); scroll.destroy(); };
+    this.destroy = function () { destroyed = true; files.destroy(); scroll.destroy(); };
   }
 
   var BUTTON = '<div class="full-start__button selector view--cs-anitube">' +
