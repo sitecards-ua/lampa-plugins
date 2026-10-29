@@ -1004,6 +1004,9 @@
     var scroll = new Lampa.Scroll({mask: true, over: true});
     var files = new Lampa.Explorer(object);
     var filter = new Lampa.Filter(object);
+    // The list's height is the screen less the filter row (as online_mod does): without it the list grows
+    // past the screen and does not scroll to the focused episode.
+    scroll.minus(files.render().find('.explorer__files-head'));
     var movie = object.movie || {};
     var name = movie.title || movie.name || '';
     var source = ANITUBE, titles = [], voices = [], titleIndex = 0, voiceIndex = 0, last = null, tmdb = {};
