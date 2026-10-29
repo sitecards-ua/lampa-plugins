@@ -1,15 +1,15 @@
-// Lampa plugin "Аніме UA" for the TV (file name anitube.js kept: Lampa already has its address). Lampa loads
+// Lampa plugin "Кіно UA" (formerly "Аніме UA") for the TV (file name anitube.js kept: Lampa already has its address). Lampa loads
 // it from GitHub Pages (lampa-plugins repository) or from our helper (browser-helper/helper.js,
 // http://127.0.0.1:8765); the helper on the TV does the requests a page cannot (those that need a site's
 // Referer, MOON's stream). Source: Claude Space PC/LG-TV.
 // Built like Lampa's online plugins (online_mod by nb557, the BwaRC "Онлайн" plugin): a card button opens a
-// screen with the poster, "Джерело" (the site: AniTube, AnimeON, Mikai, AnimeLib, YummyAnime, YummyAni, UAFlix, Eneyida, Serialno, BambooUA, Unimay), a Filter
+// screen with the poster, "Джерело" (the site: AniTube, AnimeON, Mikai, AnimeLib, YummyAnime, YummyAni, UAFlix, Eneyida, UASerials, Serialno, BambooUA, Unimay), a Filter
 // (title/season found there, voice-over), a search for one's own query and the list of episodes; an
 // episode plays in Lampa's own player with the voice-over's episodes as its playlist. The choice is
 // remembered per title. A site's result is taken only when its name and year match the card (names
 // include TMDB's English and alternative titles); the viewer's own search lists results to pick from.
 // Players: MOON (AniTube, AnimeON) — our helper reads each episode's signed HLS stream out of MOON's page;
-// Kodik (AnimeLib, YummyAnime, YummyAni) — its HLS links are read as online_mod does; ZetVideo (UAFlix), HDVB (Eneyida), BambooUA, Unimay — plain HLS; Tortuga (Serialno, Mikai) — its own script reads the playlist. ASHDI fails on this TV's 2018
+// Kodik (AnimeLib, YummyAnime, YummyAni) — its HLS links are read as online_mod does; ZetVideo (UAFlix), HDVB (Eneyida, UASerials), BambooUA, Unimay — plain HLS; Tortuga (Serialno, Mikai) — its own script reads the playlist. ASHDI fails on this TV's 2018
 // certificates and FENIX does not start here. A new site is one more entry in SOURCES. ES5 for Chromium 53.
 (function () {
   'use strict';
@@ -45,7 +45,22 @@
     }, null, language);
   }
   function html(text) { return new DOMParser().parseFromString(text, 'text/html'); }
-  function seasonOf(title) { var m = /(\d+)\s*сезон/i.exec(title || ''); return m ? +m[1] : 1; }
+  // A season mark at the end of any of a title's names (sites with a title per season): "Сезон 3", "Hyakushou
+  // Kizoku S3", "Shiguang Dailiren III", "Агенти Часу 3", "Провожающая в последний путь Фрирен 2". The highest.
+  function seasonMark(names) {
+    var roman = {II: 2, III: 3, IV: 4, V: 5, VI: 6}, best = 1;
+    names.forEach(function (name) {
+      var m, s = 1;
+      name = String(name || '').trim();
+      if (/сезон/i.test(name)) s = seasonOf(name);
+      else if ((m = /\bS(\d{1,2})$/i.exec(name))) s = +m[1];
+      else if ((m = /\s(II|III|IV|V|VI)$/.exec(name))) s = roman[m[1]];
+      else if ((m = /\s(\d)$/.exec(name))) s = +m[1];
+      if (s > best) best = s;
+    });
+    return best;
+  }
+  function seasonOf(title) { var m = /(\d+)\s*сезон/i.exec(title || '') || /сезон\s*(\d+)/i.exec(title || ''); return m ? +m[1] : 1; }
   function moonPage(url) { var m = MOON.exec(url || ''); return m ? 'https://moonanime.art/iframe/' + m[1] : ''; }
   function moonStream(page) { return page ? HELPER + '/moon/hls.m3u8?url=' + encodeURIComponent(page) : ''; }
   // MOON's HLS master (served by our helper) → done(error, best variant, {"1080p": url, …}) for Lampa's
@@ -289,7 +304,7 @@
         if (error) return done(error);
         done(null, ((data && data.data) || []).map(function (a) {
           return {title: a.rus_name || a.name, original: a.name, alt: [a.eng_name], year: +((/(\d{4})/.exec(a.releaseDateString || '') || [0, 0])[1]),
-            season: seasonOf(a.rus_name), id: a.slug_url};
+            season: seasonMark([a.rus_name, a.name, a.eng_name]), id: a.slug_url};
         }));
       });
     },
@@ -334,7 +349,7 @@
       getJson(YANI.api + '/search?q=' + encodeURIComponent(query) + '&limit=20', function (error, data) {
         if (error) return done(error);
         done(null, ((data && data.response) || []).map(function (a) {
-          return {title: a.title, year: a.year || 0, season: seasonOf(a.title), id: a.anime_id};
+          return {title: a.title, year: a.year || 0, season: seasonMark([a.title]), id: a.anime_id};
         }));
       }, 'ru');
     },
@@ -491,6 +506,19 @@
       document.body.appendChild(frame);
     });
   }
+  // The number in "5 серія", "Серія 05", "Episode 5" (a row may also name its season: "2 сезон 5 серія"); else
+  // the first number, else the row's place. Episodes go in order of their numbers, each number once, so the
+  // player's "next" is the next episode.
+  function episodeNumber(title, n) {
+    var t = title || '';
+    var m = /(\d+)\s*-?\s*(?:а|я|тя)?\s*(?:серія|серiя|епізод|episode)/i.exec(t) || /(?:серія|серiя|епізод|episode|ep|e)\s*0*(\d+)/i.exec(t) || /(\d+)/.exec(t);
+    return m ? +m[1] : n;
+  }
+  function inOrder(list) {
+    var seen = {};
+    return list.filter(function (e) { if (seen[e.number]) return false; seen[e.number] = true; return true; })
+      .sort(function (a, b) { return a.number - b.number; });
+  }
   // Tortuga's playlist: one address ("{Студія}url(subtitle:…)", a film or one episode) or seasons with
   // episodes, each with one or more voice-overs ("{A}url;{B}url"). Gives voice-overs like playerjsVoices.
   function tortugaVoices(file, name) {
@@ -509,7 +537,7 @@
     (list || []).forEach(function (s, i) {
       var season = +s.season || +(/(\d+)/.exec(s.title || '') || [0, i + 1])[1];
       (s.folder || [s]).forEach(function (e, k) {
-        var number = +e.number || +(/(\d+)/.exec(e.title || '') || [0, k + 1])[1];
+        var number = +e.number || episodeNumber(e.title, k + 1);
         streams(e.file).forEach(function (st) {
           var key = season + '|' + st.voice;
           if (!groups[key]) { groups[key] = {title: st.voice, subs: /субтитр/i.test(st.voice), season: s.folder ? season : undefined, episodes: []}; order.push(key); }
@@ -517,7 +545,7 @@
         });
       });
     });
-    return order.map(function (k) { return groups[k]; }).sort(bySubs);
+    return order.map(function (k) { groups[k].episodes = inOrder(groups[k].episodes); return groups[k]; }).sort(bySubs);
   }
   // A Playerjs playlist (the "file" of HDVB's and BambooUA's players): a film's address, voice-overs
   // with their file, voice-overs with episodes, or seasons → voice-overs → episodes. Gives voice-overs,
@@ -525,7 +553,7 @@
   function playerjsVoices(file, name) {
     function number(title, n) { return +(/(\d+)/.exec(title || '') || [0, n])[1]; }
     function episodes(list) {
-      return (list || []).filter(function (e) { return e.file; }).map(function (e, i) { return {title: number(e.title, i + 1) + ' серія', number: number(e.title, i + 1), file: e.file}; });
+      return inOrder((list || []).filter(function (e) { return e.file; }).map(function (e, i) { var k = episodeNumber(e.title, i + 1); return {title: k + ' серія', number: k, file: e.file}; }));
     }
     function voice(title, eps, season) {
       var subs = /субтитр/i.test(title);
@@ -541,6 +569,9 @@
         var season = number(s.title, i + 1);
         (s.folder || []).forEach(function (v) { out.push(voice(v.title, episodes(v.folder), season)); });
       });
+    } else if (list[0].folder && /сезон|season/i.test(list[0].title)) {
+      // Seasons → episodes, one voice-over (Moviestape).
+      list.forEach(function (s, i) { out.push(voice(name, episodes(s.folder), number(s.title, i + 1))); });
     } else if (list[0].folder) {
       list.forEach(function (v) { out.push(voice(v.title || name, episodes(v.folder))); });
     } else {
@@ -567,18 +598,41 @@
         done(null, out);
       }, 'do=search&subaction=search&story=' + encodeURIComponent(query));
     },
-    voices: function (item, done) {
-      request(item.id, function (error, page) {
-        var embed = !error && /<iframe[^>]+src="(https:\/\/hdvbua\.pro\/embed\/[^"]+)"/.exec(page);
-        if (error || !embed) return done(error || 'на сторінці немає плеєра HDVB');
-        request(embed[1].replace(/&amp;/g, '&'), function (error, player) {
-          if (error) return done(error);
-          var file = /\bfile:\s*'(\[[\s\S]*?\])'/.exec(player) || /\bfile:\s*"([^"]+)"/.exec(player);
-          if (!file) return done('HDVB не дав відео');
-          done(null, playerjsVoices(file[1], 'Eneyida'));
+    voices: function (item, done) { hdvbVoices(item.id, 'Eneyida', done); },
+    queries: function (n) { return [n.uk, n.en, n.original]; },
+    stream: function (episode, done) { hlsVariants(episode.file, done); }
+  };
+  // A title page with an HDVB player (Eneyida, UASerials): the player's Playerjs playlist. Series have
+  // /embed/, films /vid/; the page's trailer is HDVB too (/trailer/) and is not taken.
+  function hdvbVoices(page, name, done) {
+    request(page, function (error, text) {
+      var embed = !error && /<iframe[^>]+?(?:data-)?src="(https:\/\/hdvbua\.pro\/(?:embed|vid)\/[^"]+)"/.exec(text);
+      if (error || !embed) return done(error || 'на сторінці немає плеєра HDVB');
+      request(embed[1].replace(/&amp;/g, '&'), function (error, player) {
+        if (error) return done(error);
+        var file = /\bfile:\s*'(\[[\s\S]*?\])'/.exec(player) || /\bfile:\s*"([^"]+)"/.exec(player);
+        if (!file) return done('HDVB не дав відео');
+        done(null, playerjsVoices(file[1], name));
+      });
+    });
+  }
+  // UASerials (uaserials.my, Ukrainian series and films): a DLE site with the HDVB player, like Eneyida.
+  // Its search shows the Ukrainian and the original name, no year.
+  var UASERIALS = {
+    name: 'uaserials', title: 'UASerials', site: 'https://uaserials.my',
+    search: function (query, done) {
+      request(UASERIALS.site + '/index.php?do=search&subaction=search&search_start=0&full_search=0&story=' + encodeURIComponent(query), function (error, text) {
+        if (error) return done(error);
+        var out = [];
+        [].forEach.call(html(text).querySelectorAll('.short-cols'), function (item) {
+          var a = item.querySelector('a.short-img[href]'), t = item.querySelector('.th-title'), o = item.querySelector('.th-title-oname');
+          if (!a || !t || !/^https:\/\/uaserials\.my\/\d+-[^\/]+\.html$/.test(a.getAttribute('href'))) return;
+          out.push({title: (t.textContent || '').trim(), original: o ? (o.textContent || '').trim() : '', year: 0, season: 1, id: a.getAttribute('href')});
         });
+        done(null, out);
       });
     },
+    voices: function (item, done) { hdvbVoices(item.id, 'UASerials', done); },
     queries: function (n) { return [n.uk, n.en, n.original]; },
     stream: function (episode, done) { hlsVariants(episode.file, done); }
   };
@@ -711,7 +765,128 @@
     queries: function (n) { return [n.uk]; },
     stream: function (episode, done) { hlsVariants(episode.file, done); }
   };
-  var SOURCES = [ANITUBE, ANIMEON, MIKAI, ANIMELIB, YUMMY, YANI, UAFLIX, ENEYIDA, SERIALNO, BAMBOO, UNIMAY];
+  // Moviestape (moviestape.lat, Ukrainian films and series): a DLE site whose search shows only the
+  // Ukrainian name, so each result's page is read for its year ("Дюна (2021)"). Its player (creavio/sniplyo)
+  // plays MP4 files: a film's page names its file, a series' a JSON playlist of seasons → episodes.
+  var MOVIESTAPE = {
+    name: 'moviestape', title: 'Moviestape', site: 'https://moviestape.lat', pages: {},
+    search: function (query, done) {
+      request(MOVIESTAPE.site + '/index.php?do=search', function (error, text) {
+        if (error) return done(error);
+        var found = [];
+        [].forEach.call(html(text).querySelectorAll('.search_top h3 a[href]'), function (a) {
+          // Not persons, trailers or titles taken down ("abuse").
+          if (found.length < 6 && /^https:\/\/moviestape\.lat\/(katalog_filmiv|katalog_serialiv|multfilmy|multserialy|anime|dokumentalni)[a-z_]*\/[^"]*\d+-[^\/]+\.html$/.test(a.getAttribute('href'))) {
+            found.push({title: (a.textContent || '').trim(), year: 0, season: 1, id: a.getAttribute('href')});
+          }
+        });
+        var left = found.length;
+        if (!left) return done(null, []);
+        found.forEach(function (t) {
+          request(t.id, function (error, page) {
+            if (!error) {
+              MOVIESTAPE.pages[t.id] = page;
+              t.year = +((/<h1[^>]*>[^<(]*\((\d{4})/.exec(page) || [0, 0])[1]);
+            }
+            if (!--left) done(null, found);
+          });
+        });
+      }, 'do=search&subaction=search&story=' + encodeURIComponent(query));
+    },
+    voices: function (item, done) {
+      function read(error, page) {
+        var player = !error && /<iframe[^>]+src="(https:\/\/(?:creavio|sniplyo)\.online\/stream\.php\?[^"]+)"/.exec(page);
+        if (error || !player) return done(error || 'на сторінці немає плеєра');
+        var url = player[1].replace(/&amp;/g, '&'), pl = /[?&]pl=([^&]+)/.exec(url);
+        if (pl) {
+          return request(url.replace(/stream\.php\?.*$/, 'pl_new.php?pl=' + pl[1]), function (error, text) {
+            if (error) return done(error);
+            done(null, playerjsVoices(text, 'Moviestape'));
+          });
+        }
+        request(url, function (error, text) {
+          var file = !error && /\bfile:\s*"(https:\/\/[^"]+\.mp4)"/.exec(text);
+          if (!file) return done(error || 'плеєр не дав відео');
+          done(null, playerjsVoices(file[1], 'Moviestape'));
+        });
+      }
+      if (MOVIESTAPE.pages[item.id]) return read(null, MOVIESTAPE.pages[item.id]);
+      request(item.id, read);
+    },
+    queries: function (n) { return [n.uk]; },
+    // MP4: no qualities to offer.
+    stream: function (episode, done) { done(episode.file ? null : 'немає відео', episode.file, null); }
+  };
+  // UFDub (ufdub.com, a Ukrainian dubbing studio: Asian animation, anime, dorama): a DLE site; the title page's
+  // player (video.ufdub.com) lists its episodes as [name, 'mp4', address] per tab, each address leading to an
+  // MP4. A tab other than the main one ("Основа") is shown as its own voice-over.
+  var UFDUB = {
+    name: 'ufdub', title: 'UFDub', site: 'https://ufdub.com',
+    search: function (query, done) {
+      request(UFDUB.site + '/index.php?do=search', function (error, text) {
+        if (error) return done(error);
+        var out = [];
+        [].forEach.call(html(text).querySelectorAll('.short'), function (item) {
+          var a = item.querySelector('a.short-t[href]');
+          if (!a || !/^https:\/\/ufdub\.com\//.test(a.getAttribute('href'))) return;
+          // "Українська / Original", or the Ukrainian name as text and the original in a child element.
+          var own = '', inner = [];
+          [].forEach.call(a.childNodes, function (c) { if (c.nodeType === 3) own += c.textContent; else inner.push(c.textContent); });
+          var names = own.split(' / ').concat(inner).map(function (s) { return s.trim(); }).filter(Boolean);
+          var year = /\b(19\d\d|20\d\d)\b/.exec(item.textContent || '');
+          out.push({title: names[0] || '', original: names[1] || '', alt: names.slice(2), year: year ? +year[1] : 0, season: seasonMark(names), id: a.getAttribute('href')});
+        });
+        // A result without a season mark may still be a later season under a short name ("Агенти Часу" is
+        // season 3): its page's player names it in full ("Name=Агенти Часу 3/Shiguang Dailiren III").
+        var unsure = out.filter(function (t) { return t.season === 1; }).slice(0, 8), left = unsure.length;
+        if (!left) return done(null, out);
+        unsure.forEach(function (t) {
+          request(t.id, function (error, page) {
+            var name = !error && /video\.ufdub\.com\/(?:V2|AT)\/VP\.php\?ID=\d+&(?:amp;)?Name=([^"&]+)/.exec(page);
+            if (!error) UFDUB.pages[t.id] = page;
+            if (name) {
+              var full = name[1].split('/').map(function (s) { return s.trim(); }).filter(Boolean);
+              t.alt = (t.alt || []).concat(full);
+              if (!t.original) t.original = full[1] || '';
+              t.season = seasonMark(full);
+              if (t.season > 1 && full[0]) t.title = full[0];
+            }
+            if (!--left) done(null, out);
+          });
+        });
+      }, 'do=search&subaction=search&story=' + encodeURIComponent(query));
+    },
+    pages: {},
+    voices: function (item, done) {
+      if (UFDUB.pages[item.id]) return UFDUB.player(UFDUB.pages[item.id], done);
+      request(item.id, function (error, page) {
+        if (error) return done(error);
+        UFDUB.player(page, done);
+      });
+    },
+    player: function (page, done) {
+      var player = /<iframe[^>]+src="(https:\/\/video\.ufdub\.com\/(?:V2|AT)\/VP\.php\?ID=\d+)/.exec(page);
+      if (!player) return done('на сторінці немає плеєра');
+      request(player[1], function (error, text) {
+        var list = !error && /\ba\s*=\s*\[([\s\S]*?)\];/.exec(text);
+        if (!list) return done(error || 'плеєр не дав відео');
+        var groups = {}, order = [], row = /\[\s*'([^']*)'\s*,\s*'([^']*)'\s*,\s*'([^']*)'/g, m;
+        while ((m = row.exec(list[1]))) {
+          if (!/^https?:\/\//.test(m[3])) continue;
+          var tab = (/[?&]TAB=([^&]*)/.exec(m[3]) || [0, ''])[1], title = !tab || tab === 'Основа' ? 'UFDub' : tab;
+          if (/трейлер/i.test(tab + m[1])) continue;
+          if (!groups[title]) { groups[title] = {title: title, subs: /субтитр/i.test(title), episodes: []}; order.push(title); }
+          var n = episodeNumber(m[1], groups[title].episodes.length + 1);
+          groups[title].episodes.push({title: n + ' серія', number: n, file: encodeURI(m[3])});
+        }
+        done(null, order.map(function (t) { groups[t].episodes = inOrder(groups[t].episodes); return groups[t]; }).sort(bySubs));
+      });
+    },
+    queries: function (n) { return [n.uk, n.en, n.romaji]; },
+    // MP4 (the address redirects to the file): no qualities to offer.
+    stream: function (episode, done) { done(null, episode.file, null); }
+  };
+  var SOURCES = [ANITUBE, ANIMEON, MIKAI, ANIMELIB, YUMMY, YANI, UAFLIX, ENEYIDA, UASERIALS, MOVIESTAPE, SERIALNO, BAMBOO, UNIMAY, UFDUB];
 
   // Sites search descriptions too, so a result counts only when one of its names matches the card's and its
   // year fits: a film within a year, a series from its first year on (later seasons come later).
@@ -821,7 +996,7 @@
     var movie = saved.movie;
     log('resume ' + (movie.title || movie.name));
     Lampa.Activity.push({url: '', component: 'full', id: movie.id, method: movie.name ? 'tv' : 'movie', card: movie, source: movie.source || 'tmdb'});
-    setTimeout(function () { Lampa.Activity.push({url: '', title: 'Аніме UA', component: 'cs_anitube', movie: movie, page: 1}); }, 1500);
+    setTimeout(function () { Lampa.Activity.push({url: '', title: 'Кіно UA', component: 'cs_anitube', movie: movie, page: 1}); }, 1500);
   }
 
   function component(object) {
@@ -1190,7 +1365,7 @@
   }
 
   var BUTTON = '<div class="full-start__button selector view--cs-anitube">' +
-    '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg><span>Аніме UA</span></div>';
+    '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg><span>Кіно UA</span></div>';
   function addButton(e) {
     if (e.type !== 'complite') return;
     try {
@@ -1198,7 +1373,7 @@
       if (render.find('.view--cs-anitube').length) return;
       var button = $(BUTTON);
       button.on('hover:enter', function () {
-        Lampa.Activity.push({url: '', title: 'Аніме UA', component: 'cs_anitube', movie: movie, page: 1});
+        Lampa.Activity.push({url: '', title: 'Кіно UA', component: 'cs_anitube', movie: movie, page: 1});
       });
       // Second in the row (other plugins add their buttons in varying order), easy to find.
       var row = render.find('.full-start-new__buttons, .full-start__buttons').first(), first = row.children('.selector').first();

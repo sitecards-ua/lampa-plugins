@@ -2,7 +2,7 @@
 
 | Плагін | Адреса для Lampa (Налаштування → Розширення → Додати плагін) |
 |---|---|
-| AniTube (anitube.in.ua, озвучки з плеєра MOON) | `https://sitecards-ua.github.io/lampa-plugins/anitube.js` |
+| Кіно UA (колишнє «Аніме UA»): AniTube, AnimeON, Mikai, AnimeLib, YummyAnime, YummyAni, UAFlix, Eneyida, UASerials, Moviestape, Serialno, BambooUA, Unimay, UFDub | `https://sitecards-ua.github.io/lampa-plugins/anitube.js` |
 
 Плагіни працюють разом із «Нашим браузером» на телевізорі: його фоновий помічник
 (`http://127.0.0.1:8765`) робить запити, яких сторінка Lampa зробити не може. Якщо помічник не
