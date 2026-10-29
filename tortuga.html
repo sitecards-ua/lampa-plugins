@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tortuga</title>
+<!-- Helper page of the "Аніме UA" Lampa plugin (anitube.js), loaded in a hidden sandboxed frame. Tortuga
+     (tortuga.tw) hides its playlist in an obfuscated player script; that script runs here, on its own
+     origin with its own storage, and the Playerjs it calls hands the playlist back to the plugin. -->
+<body>
+<script>
+window.addEventListener('message', function (e) {
+  var d = e.data;
+  if (!d || !d.csTortuga) return;
+  function reply(file, error) { parent.postMessage({key: d.key, file: file, error: error}, '*'); }
+  var box = document.createElement('div');
+  box.id = d.id;
+  document.body.appendChild(box);
+  window.Playerjs = function (o) { reply(typeof o.file === 'string' ? o.file : JSON.stringify(o.file)); this.api = function () {}; };
+  var s = document.createElement('script');
+  s.src = 'https://tortuga.tw' + d.core;
+  s.onload = function () { try { (0, eval)('new TortugaCore(' + d.call + ')'); } catch (x) { reply('', String(x && x.message)); } };
+  s.onerror = function () { reply('', 'скрипт плеєра не завантажився'); };
+  document.head.appendChild(s);
+});
+</script>
+</body>
