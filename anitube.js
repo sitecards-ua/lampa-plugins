@@ -3,13 +3,13 @@
 // http://127.0.0.1:8765); the helper on the TV does the requests a page cannot (those that need a site's
 // Referer, MOON's stream). Source: Claude Space PC/LG-TV.
 // Built like Lampa's online plugins (online_mod by nb557, the BwaRC "Онлайн" plugin): a card button opens a
-// screen with the poster, "Джерело" (the site: AniTube, AnimeON, AnimeLib, YummyAnime, YummyAni, UAFlix, Eneyida, BambooUA, Unimay), a Filter
+// screen with the poster, "Джерело" (the site: AniTube, AnimeON, Mikai, AnimeLib, YummyAnime, YummyAni, UAFlix, Eneyida, Serialno, BambooUA, Unimay), a Filter
 // (title/season found there, voice-over), a search for one's own query and the list of episodes; an
 // episode plays in Lampa's own player with the voice-over's episodes as its playlist. The choice is
 // remembered per title. A site's result is taken only when its name and year match the card (names
 // include TMDB's English and alternative titles); the viewer's own search lists results to pick from.
 // Players: MOON (AniTube, AnimeON) — our helper reads each episode's signed HLS stream out of MOON's page;
-// Kodik (AnimeLib, YummyAnime, YummyAni) — its HLS links are read as online_mod does; ZetVideo (UAFlix), HDVB (Eneyida), BambooUA, Unimay — plain HLS. ASHDI fails on this TV's 2018
+// Kodik (AnimeLib, YummyAnime, YummyAni) — its HLS links are read as online_mod does; ZetVideo (UAFlix), HDVB (Eneyida), BambooUA, Unimay — plain HLS; Tortuga (Serialno, Mikai) — its own script reads the playlist. ASHDI fails on this TV's 2018
 // certificates and FENIX does not start here. A new site is one more entry in SOURCES. ES5 for Chromium 53.
 (function () {
   'use strict';
@@ -439,13 +439,85 @@
       if (error) return done(error);
       var lines = String(text).split(/\r?\n/), qualities = {}, best = 0, url = '';
       lines.forEach(function (line, i) {
-        var m = /^#EXT-X-STREAM-INF:.*RESOLUTION=\d+x(\d+)/.exec(line), next = lines[i + 1];
-        if (!m || !/^https?:\/\//.test(next || '')) return;
-        qualities[qualityName(+m[1])] = next;
-        if (+m[1] > best) { best = +m[1]; url = next; }
+        // Wide films (1920x960) count by their width; variant addresses may be relative (Tortuga).
+        var m = /^#EXT-X-STREAM-INF:.*RESOLUTION=(\d+)x(\d+)/.exec(line), next = lines[i + 1];
+        if (!m || !next || /^#/.test(next)) return;
+        var height = Math.max(+m[2], Math.round(+m[1] * 9 / 16)), link = absolute(next, master);
+        qualities[qualityName(height)] = link;
+        if (height > best) { best = height; url = link; }
       });
       done(null, url || master, url ? qualities : null);
     });
+  }
+  function absolute(link, base) {
+    if (/^https?:\/\//.test(link)) return link;
+    if (/^\//.test(link)) return /^https?:\/\/[^\/]+/.exec(base)[0] + link;
+    var parts = base.split('?')[0].split('/');
+    parts.pop();
+    link.split('/').forEach(function (p) { if (p === '..') parts.pop(); else if (p !== '.') parts.push(p); });
+    return parts.join('/');
+  }
+
+  // Tortuga (tortuga.tw, the player of serialno.tv and of Mikai's episodes) hides its playlist in an
+  // obfuscated player script. Its own script reads it, on our helper page tortuga.html next to this plugin
+  // (its own origin and storage) in a hidden sandboxed frame that can neither touch nor navigate Lampa;
+  // the Playerjs it calls there hands the playlist back.
+  var TORTUGA_PAGE = 'https://sitecards-ua.github.io/lampa-plugins/tortuga.html';
+  var tortugaCache = {}, tortugaNext = 0;
+  function tortugaFile(page, done) {
+    var hit = tortugaCache[page];
+    if (hit && Date.now() - hit.at < 600000) return done(null, hit.file);
+    request(page, function (error, text) {
+      var call = !error && /new TortugaCore\((\{[\s\S]*?\})\);\s*\};/.exec(text), core = !error && /loadScript\('(\/player\/js\/[^']+es5[^']*)'/.exec(text);
+      var id = call && /\bid:\s*"([^"]+)"/.exec(call[1]);
+      if (error || !call || !core || !id) return done(error || 'Tortuga: незнайома сторінка плеєра');
+      var key = 'cs_tortuga_' + (++tortugaNext), frame = document.createElement('iframe'), finished = false;
+      function finish(error, file) {
+        if (finished) return;
+        finished = true;
+        window.removeEventListener('message', listen);
+        clearTimeout(timer);
+        if (frame.parentNode) frame.parentNode.removeChild(frame);
+        if (file) tortugaCache[page] = {file: file, at: Date.now()};
+        done(error, file);
+      }
+      function listen(e) { if (e.data && e.data.key === key) finish(e.data.file ? null : 'Tortuga не дав відео' + (e.data.error ? ': ' + e.data.error : ''), e.data.file); }
+      var timer = setTimeout(function () { finish('Tortuga не відповідає'); }, 20000);
+      window.addEventListener('message', listen);
+      frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+      frame.style.cssText = 'position:absolute;left:-10000px;top:0;width:320px;height:180px;border:0;visibility:hidden';
+      frame.onload = function () { frame.contentWindow.postMessage({csTortuga: true, key: key, id: id[1], core: core[1], call: call[1]}, '*'); };
+      frame.src = TORTUGA_PAGE;
+      document.body.appendChild(frame);
+    });
+  }
+  // Tortuga's playlist: one address ("{Студія}url(subtitle:…)", a film or one episode) or seasons with
+  // episodes, each with one or more voice-overs ("{A}url;{B}url"). Gives voice-overs like playerjsVoices.
+  function tortugaVoices(file, name) {
+    function streams(value) {
+      var out = [];
+      String(value || '').split(/[;,](?=\{)/).forEach(function (part) {
+        var m = /^\{([^}]*)\}(.*)$/.exec(part.trim()), url = (m ? m[2] : part).replace(/\(subtitle:[^)]*\)\s*$/, '').trim();
+        if (/^https?:\/\//.test(url)) out.push({voice: m && m[1] || name, url: url});
+      });
+      return out;
+    }
+    var list;
+    if (!/^\s*\[/.test(file)) return streams(file).map(function (s) { return {title: s.voice, subs: /субтитр/i.test(s.voice), episodes: [{title: '1 серія', number: 1, file: s.url}]}; });
+    try { list = JSON.parse(file); } catch (e) { return []; }
+    var groups = {}, order = [];
+    (list || []).forEach(function (s, i) {
+      var season = +s.season || +(/(\d+)/.exec(s.title || '') || [0, i + 1])[1];
+      (s.folder || [s]).forEach(function (e, k) {
+        var number = +e.number || +(/(\d+)/.exec(e.title || '') || [0, k + 1])[1];
+        streams(e.file).forEach(function (st) {
+          var key = season + '|' + st.voice;
+          if (!groups[key]) { groups[key] = {title: st.voice, subs: /субтитр/i.test(st.voice), season: s.folder ? season : undefined, episodes: []}; order.push(key); }
+          groups[key].episodes.push({title: number + ' серія', number: number, file: st.url});
+        });
+      });
+    });
+    return order.map(function (k) { return groups[k]; }).sort(bySubs);
   }
   // A Playerjs playlist (the "file" of HDVB's and BambooUA's players): a film's address, voice-overs
   // with their file, voice-overs with episodes, or seasons → voice-overs → episodes. Gives voice-overs,
@@ -569,7 +641,77 @@
       done(url ? null : 'Unimay не дав відео', url, qualities);
     }
   };
-  var SOURCES = [ANITUBE, ANIMEON, ANIMELIB, YUMMY, YANI, UAFLIX, ENEYIDA, BAMBOO, UNIMAY];
+  // Mikai (mikai.me, Ukrainian anime): its JSON API (any origin) lists each title's voice-over teams with
+  // their players' episodes. Its MOON pages refuse to load here, so each episode's Tortuga page is taken.
+  var MIKAI = {
+    name: 'mikai', title: 'Mikai', api: 'https://api.mikai.me/v1',
+    search: function (query, done) {
+      getJson(MIKAI.api + '/anime/search?name=' + encodeURIComponent(query), function (error, data) {
+        if (error) return done(error);
+        done(null, ((data && data.result) || []).map(function (a) {
+          var n = (a.details && a.details.names) || {}, en = n.nameEnglish || '', native = n.nameNative || '';
+          // "Фрірен 2" is "… 2nd Season" / "… Season 2" in its other names.
+          var s = /season (\d+)/i.exec(en) || /(\d+)(?:st|nd|rd|th) season/i.exec(native) || /season (\d+)/i.exec(native);
+          return {title: n.name || en || native, original: native, alt: [en], year: a.year || 0, season: s ? +s[1] : seasonOf(n.name), id: a.id};
+        }));
+      });
+    },
+    voices: function (item, done) {
+      getJson(MIKAI.api + '/anime/' + item.id, function (error, data) {
+        if (error) return done(error);
+        var list = [], seen = {};
+        (((data && data.result) || {}).players || []).forEach(function (p) {
+          var tortuga = (p.providers || []).filter(function (v) { return /^tortuga/i.test(v.name); })[0];
+          var team = ((p.team && p.team.name) || 'Mikai') + (p.isSubs ? ' (субтитри)' : '');
+          if (!tortuga || !tortuga.episodes || !tortuga.episodes.length || seen[team]) return;
+          seen[team] = true;
+          list.push({title: team, subs: !!p.isSubs, episodes: tortuga.episodes.map(function (e) {
+            return {title: e.number + ' серія', number: e.number, page: e.playLink};
+          }).sort(function (a, b) { return a.number - b.number; })});
+        });
+        done(null, list.sort(bySubs));
+      });
+    },
+    queries: function (n) { return [n.uk, n.en, n.romaji]; },
+    stream: function (episode, done) {
+      tortugaFile(episode.page, function (error, file) {
+        var v = !error && tortugaVoices(file, 'Mikai')[0];
+        if (!v) return done(error || 'Tortuga не дав відео');
+        hlsVariants(v.episodes[0].file, done);
+      });
+    }
+  };
+
+  // serialno.tv (Ukrainian series): a DLE site; the series page embeds Tortuga with the whole playlist
+  // (seasons → episodes → voice-overs).
+  var SERIALNO = {
+    name: 'serialno', title: 'Serialno', site: 'https://serialno.tv',
+    search: function (query, done) {
+      request(SERIALNO.site + '/index.php?do=search', function (error, text) {
+        if (error) return done(error);
+        var out = [];
+        [].forEach.call(html(text).querySelectorAll('.th-item'), function (item) {
+          var a = item.querySelector('a.th-in[href]'), t = item.querySelector('.th-title'), y = item.querySelector('a[href*="/xfsearch/year/"]');
+          if (!a || !t || !/^https:\/\/serialno\.tv\/\d+-[^\/]+\.html$/.test(a.getAttribute('href'))) return;
+          out.push({title: (t.textContent || '').trim(), year: y ? +y.textContent : 0, season: 1, id: a.getAttribute('href')});
+        });
+        done(null, out);
+      }, 'do=search&subaction=search&story=' + encodeURIComponent(query));
+    },
+    voices: function (item, done) {
+      request(item.id, function (error, page) {
+        var player = !error && (/src="(https:\/\/tortuga\.tw\/embed\/\d+)"/.exec(page) || /src="(https:\/\/tortuga\.tw\/vod\/\d+)"/.exec(page));
+        if (error || !player) return done(error || 'на сторінці немає плеєра Tortuga');
+        tortugaFile(player[1], function (error, file) {
+          if (error) return done(error);
+          done(null, tortugaVoices(file, 'Serialno'));
+        });
+      });
+    },
+    queries: function (n) { return [n.uk]; },
+    stream: function (episode, done) { hlsVariants(episode.file, done); }
+  };
+  var SOURCES = [ANITUBE, ANIMEON, MIKAI, ANIMELIB, YUMMY, YANI, UAFLIX, ENEYIDA, SERIALNO, BAMBOO, UNIMAY];
 
   // Sites search descriptions too, so a result counts only when one of its names matches the card's and its
   // year fits: a film within a year, a series from its first year on (later seasons come later).
@@ -1064,7 +1206,7 @@
     } catch (error) { log('button ' + error); }
   }
   // For checks from the PC in our own browser (the same engine and network rules as Lampa).
-  window.claudespaceAnitubeApi = {sources: SOURCES, matches: matches, cardNames: cardNames};
+  window.claudespaceAnitubeApi = {sources: SOURCES, matches: matches, cardNames: cardNames, tortugaFile: tortugaFile, tortugaVoices: tortugaVoices, hlsVariants: hlsVariants};
   function init() {
     // The episode row of online plugins ("prestige" look: still, title, episode name, progress).
     Lampa.Template.add('cs_anitube_item', '<div class="cs-anitube selector">' +
