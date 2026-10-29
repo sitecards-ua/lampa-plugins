@@ -1208,7 +1208,12 @@
     };
 
     this.buildFilter = function () {
-      filter.set('sort', SOURCES.map(function (s) { return {title: s.title, subtitle: availText(s), source: s.name, selected: s === source}; }));
+      // Sites that have the title first, then those still being checked, then the rest; otherwise in
+      // SOURCES order.
+      var rank = {yes: 0, wait: 1, none: 2, error: 3, no: 4};
+      function rankOf(s) { var a = avail[s.name]; return a ? rank[a.state] : 1; }
+      var listed = SOURCES.map(function (s, i) { return {s: s, i: i}; }).sort(function (a, b) { return rankOf(a.s) - rankOf(b.s) || a.i - b.i; });
+      filter.set('sort', listed.map(function (x) { return {title: x.s.title, subtitle: availText(x.s), source: x.s.name, selected: x.s === source}; }));
       var mine = avail[source.name];
       filter.chosen('sort', [source.title + (mine && mine.quality ? ' · ' + mine.quality : '')]);
       function group(title, stype, list, current) {
