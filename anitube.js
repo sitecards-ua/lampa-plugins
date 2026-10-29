@@ -17,7 +17,9 @@
   window.claudespaceAnitube = true;
 
   var HELPER = 'http://127.0.0.1:8765';
-  var MOON = /^https:\/\/moonanime\.art\/iframe\/([A-Za-z0-9_-]+)/;
+  // AniTube links MOON's pages on moonanime.net since October 2026; the same page is on moonanime.art, the
+  // address our helper takes.
+  var MOON = /^https:\/\/moonanime\.(?:art|net)\/iframe\/([A-Za-z0-9_-]+)/;
   var CHOICE_KEY = 'cs_anitube_choice';
 
   // Messages go to the helper's log on the TV: Lampa itself cannot be inspected from the PC.
@@ -1083,20 +1085,37 @@
       var first = sure.slice().sort(function (a, b) { return a.season - b.season || (b.exact ? 1 : 0) - (a.exact ? 1 : 0) || a.order - b.order; })[0];
       src.voices(first, function (error, list) {
         if (error || !list || !list.length) return done({state: error ? 'error' : 'none', error: error});
+        // The seasons the site has: those its voice-overs carry (all seasons under one title) or those of
+        // its titles (a title per season).
+        var seasons = [];
+        list.forEach(function (v) { if (v.season && seasons.indexOf(v.season) < 0) seasons.push(v.season); });
+        if (!seasons.length) sure.forEach(function (t) { if (seasons.indexOf(t.season || 1) < 0) seasons.push(t.season || 1); });
+        function yes(quality) { return {state: 'yes', voices: distinct(list), quality: quality, seasons: movie.name ? seasons : []}; }
         // A voice-over whose episode will not play here (UAFlix's ASHDI-only season) says nothing of the
         // quality: up to three are tried.
         (function voice(k) {
-          if (k >= Math.min(list.length, 3)) return done({state: 'yes', voices: distinct(list), quality: ''});
+          if (k >= Math.min(list.length, 3)) return done(yes(''));
           function episodes(ready) { if (list[k].episodes) return ready(null, list[k].episodes); list[k].load(ready); }
           episodes(function (error, eps) {
             if (error || !eps || !eps.length) return voice(k + 1);
             qualityOf(src, eps[0], function (label) {
               if (!label) return voice(k + 1);
-              done({state: 'yes', voices: distinct(list), quality: label});
+              done(yes(label));
             });
           });
         }(0));
       });
+    }
+    // "сезон 1", "сезони 1–5", "сезони 1–3, 5".
+    function seasonsText(list) {
+      var s = list.slice().sort(function (a, b) { return a - b; }), parts = [];
+      for (var i = 0; i < s.length; i++) {
+        var j = i;
+        while (j + 1 < s.length && s[j + 1] === s[j] + 1) j++;
+        parts.push(j > i ? s[i] + '–' + s[j] : String(s[i]));
+        i = j;
+      }
+      return (s.length === 1 ? 'сезон ' : 'сезони ') + parts.join(', ');
     }
     function availText(s) {
       var a = avail[s.name];
@@ -1104,7 +1123,8 @@
       if (a.state === 'no') return '— немає';
       if (a.state === 'none') return '— є, але без плеєра для ТВ';
       if (a.state === 'error') return '⚠ ' + (a.error || 'помилка');
-      return '✓ ' + [a.quality || 'якість невідома', a.voices + (a.voices === 1 ? ' озвучка' : a.voices < 5 ? ' озвучки' : ' озвучок')].join(' · ');
+      return '✓ ' + [a.quality || 'якість невідома', a.seasons && a.seasons.length ? seasonsText(a.seasons) : '',
+        a.voices + (a.voices === 1 ? ' озвучка' : a.voices < 5 ? ' озвучки' : ' озвучок')].filter(Boolean).join(' · ');
     }
 
     // A site's results for the card's names (local first: the sites name titles in Ukrainian), or for
