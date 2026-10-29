@@ -21,6 +21,8 @@
   // address our helper takes.
   var MOON = /^https:\/\/moonanime\.(?:art|net)\/iframe\/([A-Za-z0-9_-]+)/;
   var CHOICE_KEY = 'cs_anitube_choice';
+  var UA_FLAG = '<svg width="1.1em" height="0.75em" viewBox="0 0 3 2" style="vertical-align:middle;margin-left:.5em;border-radius:.1em">' +
+    '<rect width="3" height="1" fill="#0057b7"/><rect y="1" width="3" height="1" fill="#ffd700"/></svg>';
 
   // Messages go to the helper's log on the TV: Lampa itself cannot be inspected from the PC.
   function log(text) {
@@ -261,7 +263,7 @@
   // yummyanime.tv (Russian titles): a DLE site; the title page's player slot "Kodik" comes from its
   // controller.php as a Kodik serial page with all voice-overs.
   var YUMMY = {
-    name: 'yummy', title: 'YummyAnime', site: 'https://yummyanime.tv',
+    name: 'yummy', title: 'YummyAnime', site: 'https://yummyanime.tv', russian: true,
     search: function (query, done) {
       request(YUMMY.site + '/index.php?do=search', function (error, text) {
         if (error) return done(error);
@@ -300,7 +302,7 @@
   // animelib.org (Russian site): its JSON API through our helper (it wants the site's Referer); every
   // episode lists a Kodik player per voice-over team.
   var ANIMELIB = {
-    name: 'animelib', title: 'AnimeLib', api: HELPER + '/animelib/api',
+    name: 'animelib', title: 'AnimeLib', api: HELPER + '/animelib/api', russian: true,
     search: function (query, done) {
       getJson(ANIMELIB.api + '/anime?q=' + encodeURIComponent(query), function (error, data) {
         if (error) return done(error);
@@ -344,7 +346,7 @@
   // YummyAni (yummyani.me, Russian): the site's public API api.yani.tv lists every episode of every
   // voice-over with its player; the Kodik ones are taken.
   var YANI = {
-    name: 'yani', title: 'YummyAni', api: 'https://api.yani.tv',
+    name: 'yani', title: 'YummyAni', api: 'https://api.yani.tv', russian: true,
     // The API names titles in the asking browser's language; the TV asks for Ukrainian, which gives the
     // site's own Ukrainian names, unlike TMDB's — Russian ones match TMDB's Russian alternative title.
     search: function (query, done) {
@@ -1213,7 +1215,12 @@
       var rank = {yes: 0, wait: 1, none: 2, error: 3, no: 4};
       function rankOf(s) { var a = avail[s.name]; return a ? rank[a.state] : 1; }
       var listed = SOURCES.map(function (s, i) { return {s: s, i: i}; }).sort(function (a, b) { return rankOf(a.s) - rankOf(b.s) || a.i - b.i; });
-      filter.set('sort', listed.map(function (x) { return {title: x.s.title, subtitle: availText(x.s), source: x.s.name, selected: x.s === source}; }));
+      // A Ukrainian flag by the sites that have the title in Ukrainian (all but the Russian ones). Lampa puts
+      // the title into its template as HTML; an SVG, since this TV has no colour emoji.
+      filter.set('sort', listed.map(function (x) {
+        var flag = !x.s.russian && rankOf(x.s) === 0 ? UA_FLAG : '';
+        return {title: x.s.title + flag, subtitle: availText(x.s), source: x.s.name, selected: x.s === source};
+      }));
       var mine = avail[source.name];
       filter.chosen('sort', [source.title + (mine && mine.quality ? ' · ' + mine.quality : '')]);
       function group(title, stype, list, current) {
