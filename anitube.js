@@ -885,7 +885,60 @@
     // MP4 (the address redirects to the file): no qualities to offer.
     stream: function (episode, done) { done(null, episode.file, null); }
   };
-  var SOURCES = [ANITUBE, ANIMEON, MIKAI, ANIMELIB, YUMMY, YANI, UAFLIX, ENEYIDA, UASERIALS, MOVIESTAPE, SERIALNO, BAMBOO, UNIMAY, UFDUB];
+  // Makhno: the catalogue of ASHDI as the server of the Free Bandera plugin lists it (any origin may read it).
+  // A title is found by the card's TMDB number, so there is nothing to find for the viewer's own text search.
+  // A series gives voice-overs → seasons → episodes, a film its streams; all are plain HLS on ashdi.vip.
+  var MAKHNO = {
+    name: 'makhno', title: 'Makhno', api: 'https://bbe.lme.isroot.in/api/v2',
+    search: function (query, done) {
+      var tmdb = /^tmdb:(tv|movie):(\d+)$/.exec(query);
+      if (!tmdb) return done(null, []);
+      getJson(MAKHNO.api + '/search?source=makhno&sources=makhno&tmdb_id=' + tmdb[2] + '&serial=' + (tmdb[1] === 'tv' ? 1 : 0), function (error, data) {
+        if (error) return done(error);
+        done(null, ((data && data.items) || []).map(function (a) {
+          // Its own "title" is only the number asked for.
+          return {title: 'Makhno', year: 0, season: 1, id: JSON.stringify(a.ref), ref: a.ref, tmdb: true};
+        }));
+      });
+    },
+    voices: function (item, done) {
+      var x = new XMLHttpRequest();
+      x.open('POST', MAKHNO.api + '/content');
+      x.setRequestHeader('Content-Type', 'application/json');
+      x.timeout = 20000;
+      x.onload = function () {
+        var data;
+        try { data = JSON.parse(x.responseText); } catch (e) { return done('незрозуміла відповідь сервера'); }
+        var list = [];
+        (data.voices || []).forEach(function (v) {
+          var title = v.display_name || v.name || 'Makhno', subs = /субтитр|\bsub\b/i.test(title);
+          (v.seasons || []).forEach(function (s, i) {
+            var episodes = inOrder((s.episodes || []).filter(function (e) { return e.file; }).map(function (e, k) {
+              var n = +e.number || k + 1;
+              return {title: n + ' серія', number: n, file: e.file};
+            }));
+            if (episodes.length) list.push({title: title, subs: subs, season: +s.title || i + 1, episodes: episodes});
+          });
+        });
+        (data.streams || []).forEach(function (s) {
+          if (!s.url) return;
+          // "[FHD] багатоголосий закадровий | DniproFilm"; "не визначено" says nothing.
+          var title = String(s.title || '').replace(/^\[[^\]]*\]\s*/, '').trim();
+          list.push({title: !title || /не визначено/i.test(title) ? 'Makhno' : title, subs: false, episodes: [{title: '1 серія', number: 1, file: s.url}]});
+        });
+        done(null, list.sort(bySubs));
+      };
+      x.onerror = function () { done('мережа недоступна'); };
+      x.ontimeout = function () { done('сервер не відповідає'); };
+      x.send(JSON.stringify({source: 'makhno', ref: item.ref, full: true}));
+    },
+    queries: function (n) { return [n.tmdb ? 'tmdb:' + n.tmdb : '']; },
+    // ASHDI's certificate fails for this page's own requests on the TV, not for its player: the address goes
+    // to the player unread (no hls.js, no list of qualities).
+    native: true,
+    stream: function (episode, done) { done(null, episode.file, null); }
+  };
+  var SOURCES = [ANITUBE, ANIMEON, MIKAI, ANIMELIB, YUMMY, YANI, UAFLIX, ENEYIDA, UASERIALS, MAKHNO, MOVIESTAPE, SERIALNO, BAMBOO, UNIMAY, UFDUB];
 
   // Sites search descriptions too, so a result counts only when one of its names matches the card's and its
   // year fits: a film within a year, a series from its first year on (later seasons come later).
@@ -905,6 +958,8 @@
     return short.indexOf(' ') > 0 || SEQUEL.test(long.slice(short.length + 1));
   }
   function matches(result, movie, names) {
+    // Found by the card's own TMDB number.
+    if (result.tmdb) return true;
     names = names || [movie.title, movie.name, movie.original_title, movie.original_name];
     var same = [result.title, result.original].concat(result.alt || []).some(function (r) { return names.some(function (n) { return sameName(r, n); }); });
     var year = +String(movie.release_date || movie.first_air_date || '').slice(0, 4);
@@ -931,7 +986,8 @@
   function cardNames(movie, done) {
     var key = (movie.name ? 'tv' : 'movie') + movie.id;
     if (namesCache[key]) return done(namesCache[key]);
-    var n = {uk: movie.title || movie.name, original: movie.original_title || movie.original_name, en: '', ru: '', romaji: '', all: []};
+    var n = {uk: movie.title || movie.name, original: movie.original_title || movie.original_name, en: '', ru: '', romaji: '', all: [],
+      tmdb: movie.id && (!movie.source || movie.source === 'tmdb') ? (movie.name ? 'tv:' : 'movie:') + movie.id : ''};
     function finish() {
       n.all = [n.uk, n.original, n.en, n.ru, n.romaji].concat(n.alts || []).filter(function (t, i, a) { return t && a.indexOf(t) === i; });
       done(namesCache[key] = n);
@@ -1329,7 +1385,8 @@
         });
       }
       var playlist = voice.episodes.map(function (episode) {
-        var cell = {title: [name, episode.title === name ? '' : episode.title, label(voice)].filter(Boolean).join(' · '), hls_type: 'hlsjs'};
+        var cell = {title: [name, episode.title === name ? '' : episode.title, label(voice)].filter(Boolean).join(' · ')};
+        if (!src.native) cell.hls_type = 'hlsjs';
         // Lampa keeps the watch progress under the same key online plugins use, and the rows show it.
         try { cell.timeline = Lampa.Timeline.view(hash(episode.number)); } catch (error) {}
         cell.url = function (call) { stream(episode, function (url, error, qualities) { cell.url = url; if (qualities) cell.quality = qualities; call(); }); };
