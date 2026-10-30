@@ -184,21 +184,37 @@
             if (!groups[key]) { groups[key] = []; order.push(key); }
             groups[key].push({title: text, number: +(/\d+/.exec(text) || [groups[key].length + 1])[0], page: file});
           });
-          var list = order.filter(function (key) { return moonPage(groups[key][0].page); }).map(function (key) {
+          // Each voice-over has its episodes per player, not always the same ones: MOON first, what it lacks
+          // from ASHDI (the TV's own player), so that no episode goes missing.
+          var voices = {}, voiceOrder = [];
+          order.forEach(function (key) {
+            var first = groups[key][0].page, moon = !!moonPage(first), ashdi = /^https:\/\/ashdi\.vip\//.test(first);
+            if (!moon && !ashdi) return;
             var parts = [], path = key.split('_');
-            for (var i = 2; i <= path.length; i++) { var name = names[path.slice(0, i).join('_')]; if (name) parts.push(name.replace(/^ПЛ[ЕЄ]+Р\s+/i, '')); }
-            // The player name (always MOON here) says nothing to the viewer.
-            if (/MOON$/i.test(parts[parts.length - 1])) parts.pop();
+            for (var i = 2; i <= path.length; i++) { var name = names[path.slice(0, i).join('_')]; if (name) parts.push(name); }
+            // The player name says nothing to the viewer.
+            if (/^ПЛ[ЕЄ]+Р\s/i.test(parts[parts.length - 1])) parts.pop();
             var subs = /СУБТИТР/i.test(parts.join(' '));
             parts = parts.filter(function (p) { return !/^(ОЗВУЧЕННЯ|СУБТИТРИ)$/i.test(p); });
-            return {title: parts.join(' · ') + (subs ? ' (субтитри)' : ''), episodes: groups[key], subs: subs};
+            var title = parts.join(' · ') + (subs ? ' (субтитри)' : '');
+            if (!voices[title]) { voices[title] = {title: title, subs: subs, byNumber: {}}; voiceOrder.push(title); }
+            groups[key].forEach(function (e) {
+              var had = voices[title].byNumber[e.number];
+              if (!had || moon && had.ashdi) voices[title].byNumber[e.number] = {title: e.title, number: e.number, page: e.page, ashdi: !moon};
+            });
           });
-          done(null, list.sort(bySubs));
+          done(null, voiceOrder.map(function (title) {
+            var v = voices[title], byNumber = v.byNumber;
+            return {title: v.title, subs: v.subs, episodes: inOrder(Object.keys(byNumber).map(function (n) { return byNumber[n]; }))};
+          }).filter(function (v) { return v.episodes.length; }).sort(bySubs));
         });
       });
     },
     queries: function (n) { return [n.uk, n.original]; },
-    stream: function (episode, done) { moonVariants(moonPage(episode.page), done); }
+    stream: function (episode, done) {
+      if (episode.ashdi) return ashdiStream(episode.page, done);
+      moonVariants(moonPage(episode.page), done);
+    }
   };
 
   // animeon.club: a JSON API (the site's own), with the English name and the season of each title.
