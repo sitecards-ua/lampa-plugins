@@ -1577,6 +1577,8 @@
       '.cs-anitube__quality{padding:.1em .5em;border:.1em solid rgba(255,255,255,.6);border-radius:.3em;font-size:.9em}' +
       '.cs-anitube__quality:empty{display:none}' +
       '.cs-anitube-note{opacity:.7;margin:0 0 1.2em;font-size:1.2em}' +
+      // The Logo Title plugin sets only a logo's width: a tall one pushes the card's buttons off the screen.
+      '.full-start-new__title img{max-height:4em!important;max-width:15em!important;width:auto!important;height:auto!important}' +
       '</style>');
     Lampa.Component.add('cs_anitube', component);
     Lampa.Listener.follow('full', addButton);
