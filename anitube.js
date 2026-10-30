@@ -1535,9 +1535,11 @@
       button.on('hover:enter', function () {
         Lampa.Activity.push({url: '', title: 'Кіно UA', component: 'cs_anitube', movie: movie, page: 1});
       });
-      // Second in the row (other plugins add their buttons in varying order), easy to find.
-      var row = render.find('.full-start-new__buttons, .full-start__buttons').first(), first = row.children('.selector').first();
-      if (first.length) first.after(button); else row.append(button);
+      // First in the row. Other plugins add their buttons later and in varying order, so it is put back.
+      var row = render.find('.full-start-new__buttons, .full-start__buttons').first();
+      function toFront() { if (row.children().first()[0] !== button[0]) row.prepend(button); }
+      toFront();
+      [300, 1000, 2500].forEach(function (ms) { setTimeout(toFront, ms); });
     } catch (error) { log('button ' + error); }
   }
   // For checks from the PC in our own browser (the same engine and network rules as Lampa).
