@@ -21,8 +21,9 @@
   // address our helper takes.
   var MOON = /^https:\/\/moonanime\.(?:art|net)\/iframe\/([A-Za-z0-9_-]+)/;
   var CHOICE_KEY = 'cs_anitube_choice';
-  var UA_FLAG = '<svg width="1.1em" height="0.75em" viewBox="0 0 3 2" style="vertical-align:middle;margin-left:.5em;border-radius:.1em">' +
-    '<rect width="3" height="1" fill="#0057b7"/><rect y="1" width="3" height="1" fill="#ffd700"/></svg>';
+  // A plain box, not an SVG: Lampa's styles stretch an SVG over the whole menu row.
+  var UA_FLAG = '<span style="display:inline-block;width:1.2em;height:.8em;margin-left:.5em;vertical-align:middle;border-radius:.1em;' +
+    'background:linear-gradient(#0057b7 50%,#ffd700 50%)"></span>';
 
   // Messages go to the helper's log on the TV: Lampa itself cannot be inspected from the PC.
   function log(text) {
@@ -1216,7 +1217,7 @@
       function rankOf(s) { var a = avail[s.name]; return a ? rank[a.state] : 1; }
       var listed = SOURCES.map(function (s, i) { return {s: s, i: i}; }).sort(function (a, b) { return rankOf(a.s) - rankOf(b.s) || a.i - b.i; });
       // A Ukrainian flag by the sites that have the title in Ukrainian (all but the Russian ones). Lampa puts
-      // the title into its template as HTML; an SVG, since this TV has no colour emoji.
+      // the title into its template as HTML; a drawn box, since colour emoji are not to be relied on here.
       filter.set('sort', listed.map(function (x) {
         var flag = !x.s.russian && rankOf(x.s) === 0 ? UA_FLAG : '';
         return {title: x.s.title + flag, subtitle: availText(x.s), source: x.s.name, selected: x.s === source};
