@@ -1150,27 +1150,55 @@
     this.begin = function () {
       var chosen = SOURCES.filter(function (s) { return s.name === saved.source; })[0];
       var order = chosen ? [chosen].concat(SOURCES.filter(function (s) { return s !== chosen; })) : SOURCES;
-      var shown = false;
-      (function next(i) {
-        if (destroyed) return;
-        if (i >= order.length) {
-          log('availability ' + SOURCES.map(function (s) { return s.name + ':' + availText(s); }).join(', '));
-          if (shown) return;
-          source = order[0];
-          _this.buildFilter();
-          return _this.empty('Немає «' + name + '» ні на ' + SOURCES.map(function (s) { return s.title; }).join(', ') +
-            '. Якщо на сайті воно під іншою назвою — «Пошук» (лупа вгорі).');
+      // Up to four sites at a time. The site shown is still the first in this order that has the title: it
+      // waits for those before it. found[i]: undefined — not answered yet, null — no title, else its titles.
+      var shown = false, found = [], next = 0, left = order.length, WORKERS = 4;
+      function show() {
+        if (shown || destroyed) return;
+        for (var k = 0; k < order.length; k++) {
+          if (found[k] === undefined) return;
+          if (found[k]) { shown = true; source = order[k]; _this.useTitles(found[k]); return; }
         }
-        var src = order[i];
-        if (avail[src.name] && avail[src.name].state !== 'wait') return next(i + 1);
+      }
+      function finished() {
+        if (--left || destroyed) return;
+        log('availability ' + SOURCES.map(function (s) { return s.name + ':' + availText(s); }).join(', '));
+        if (shown) return;
+        source = order[0];
+        _this.buildFilter();
+        _this.empty('Немає «' + name + '» ні на ' + SOURCES.map(function (s) { return s.title; }).join(', ') +
+          '. Якщо на сайті воно під іншою назвою — «Пошук» (лупа вгорі).');
+      }
+      function worker() {
+        if (destroyed || next >= order.length) return;
+        var i = next++, src = order[i];
+        function settled(state) {
+          avail[src.name] = state;
+          if (!destroyed) { _this.buildFilter(); refreshMenu(src); }
+          finished();
+          worker();
+        }
         avail[src.name] = {state: 'wait'};
         _this.collect(src, null, function (all, sure, failed) {
-          if (!sure.length) { avail[src.name] = {state: failed ? 'error' : 'no', error: failed}; _this.buildFilter(); return next(i + 1); }
-          if (!shown) { shown = true; source = src; _this.useTitles(sure); }
-          probe(src, sure, function (state) { avail[src.name] = state; if (!destroyed) _this.buildFilter(); next(i + 1); });
+          found[i] = sure.length ? sure : null;
+          show();
+          if (!sure.length) return settled({state: failed ? 'error' : 'no', error: failed});
+          probe(src, sure, settled);
         });
-      }(0));
+      }
+      for (var w = 0; w < WORKERS; w++) worker();
     };
+    // The open "Джерело" menu is drawn once: the row of a site just checked gets its result in place.
+    function refreshMenu(src) {
+      if (!$('body').hasClass('selectbox--open')) return;
+      $('.selectbox-item').each(function () {
+        var row = $(this), title = row.find('.selectbox-item__title');
+        if ($.trim(title.text()) !== src.title) return;
+        if (!row.find('.selectbox-item__subtitle').length) return;
+        row.find('.selectbox-item__subtitle').text(availText(src));
+        if (!src.russian && avail[src.name].state === 'yes' && !title.find('span').length) title.append(UA_FLAG);
+      });
+    }
     function distinct(list) { var seen = {}, n = 0; list.forEach(function (v) { if (!seen[v.title]) { seen[v.title] = true; n++; } }); return n; }
     // The first title (season order, as useTitles), its voice-overs and the first one's best quality.
     function probe(src, sure, done) {
