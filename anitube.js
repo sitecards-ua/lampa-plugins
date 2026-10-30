@@ -436,7 +436,11 @@
       request(episode.page, function (error, page) {
         if (error) return done(error);
         var zet = /<iframe[^>]+src="https:\/\/zetvideo\.net\/vod\/(\d+)/.exec(page);
-        if (!zet) return done(/ashdi\./.test(page) ? 'ця серія на UAFlix лише в плеєрі ASHDI, він на цьому ТВ не працює' : 'на сторінці немає плеєра');
+        if (!zet) {
+          var ashdi = /<iframe[^>]+src="(https:\/\/ashdi\.vip\/[^"]+)"/.exec(page);
+          if (!ashdi) return done('на сторінці немає плеєра');
+          return ashdiStream(ashdi[1].replace(/&amp;/g, '&'), done);
+        }
         request(HELPER + '/zetvideo/vod/' + zet[1], function (error, text) {
           var file = !error && /file:"(https:\/\/zetvideo\.net\/[^"]+\.m3u8)"/.exec(text);
           if (!file) return done(error || 'ZetVideo не дав відео');
@@ -445,6 +449,41 @@
       });
     }
   };
+
+  // Asks the server of the Free Bandera plugin to read an ASHDI player (this TV's page requests cannot):
+  // ref is {play: address}; done(error, its answer).
+  function makhnoContent(ref, done) {
+    var x = new XMLHttpRequest();
+    x.open('POST', 'https://bbe.lme.isroot.in/api/v2/content');
+    x.setRequestHeader('Content-Type', 'application/json');
+    x.timeout = 20000;
+    x.onload = function () {
+      var data;
+      try { data = JSON.parse(x.responseText); } catch (e) { return done('незрозуміла відповідь сервера'); }
+      done(null, data);
+    };
+    x.onerror = function () { done('мережа недоступна'); };
+    x.ontimeout = function () { done('сервер не відповідає'); };
+    x.send(JSON.stringify({source: 'makhno', ref: ref, full: true}));
+  }
+  // The stream of an ASHDI player address, for the TV's own player (done's 4th argument): a series'
+  // address names its season and episode, which are looked up by number; else a film's first stream.
+  function ashdiStream(address, done) {
+    var s = /[?&]season=(\d+)/.exec(address), e = /[?&]episode=(\d+)/.exec(address);
+    makhnoContent({play: address.split('?')[0], serial: s ? 1 : 0}, function (error, data) {
+      if (error || !data) return done(error || 'ASHDI не дав відео');
+      var file = '';
+      if (s && e) {
+        (data.voices || []).forEach(function (v) {
+          (v.seasons || []).forEach(function (season) {
+            if (file || +season.title !== +s[1]) return;
+            (season.episodes || []).forEach(function (ep) { if (!file && +ep.number === +e[1] && ep.file) file = ep.file; });
+          });
+        });
+      } else if (data.streams && data.streams[0]) file = data.streams[0].url;
+      done(file ? null : 'ASHDI не дав цю серію', file, null, true);
+    });
+  }
 
   // A plain HLS address (any origin may read it) → done(error, best variant, {"1080p": url, …}); a stream
   // without variants is played as it is.
@@ -1379,9 +1418,9 @@
       var voice = voices[voiceIndex], src = source;
       // The best quality first; the others go to Lampa's quality menu.
       function stream(episode, call) {
-        src.stream(episode, function (error, url, qualities) {
+        src.stream(episode, function (error, url, qualities, native) {
           if (error || !url) log('no stream: ' + (error || 'no url'));
-          call(url || '', error, qualities);
+          call(url || '', error, qualities, native);
         });
       }
       var playlist = voice.episodes.map(function (episode) {
@@ -1389,12 +1428,14 @@
         if (!src.native) cell.hls_type = 'hlsjs';
         // Lampa keeps the watch progress under the same key online plugins use, and the rows show it.
         try { cell.timeline = Lampa.Timeline.view(hash(episode.number)); } catch (error) {}
-        cell.url = function (call) { stream(episode, function (url, error, qualities) { cell.url = url; if (qualities) cell.quality = qualities; call(); }); };
+        // An ASHDI episode (UAFlix) goes to the TV's own player: hls.js could not read it.
+        cell.url = function (call) { stream(episode, function (url, error, qualities, native) { cell.url = url; if (qualities) cell.quality = qualities; if (native) delete cell.hls_type; call(); }); };
         return cell;
       });
-      stream(voice.episodes[index], function (url, error, qualities) {
+      stream(voice.episodes[index], function (url, error, qualities, native) {
         if (!url) return Lampa.Noty.show('Не вдалося отримати відео цієї серії' + (error ? ': ' + error : ''));
         playlist[index].url = url;
+        if (native) delete playlist[index].hls_type;
         if (qualities) playlist[index].quality = qualities;
         log('play ' + src.name + ' ' + playlist[index].title + ' ' + url);
         Lampa.Player.play(playlist[index]);
