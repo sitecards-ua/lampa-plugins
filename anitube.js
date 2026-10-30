@@ -983,7 +983,8 @@
   // year fits: a film within a year, a series from its first year on (later seasons come later).
   function plain(name) {
     return String(name || '').toLowerCase().replace(/[ʼ’'`]/g, '').replace(/\(?\s*\d+\s*сезон\s*\)?|(^|\s)сезон\s*\d+|\(\s*фільм\s*\)/g, ' ')
-      .replace(/[^0-9a-zа-яіїєґё]+/g, ' ').trim();
+      // Kana, kanji and hangul stay: an original Japanese name is often the only one to match.
+      .replace(/[^0-9a-zа-яіїєґё぀-ヿ㐀-鿿가-힯]+/g, ' ').trim();
   }
   // Equal names, or one continuing the other ("Магічна битва" — "Магічна битва 0"). A one-word name may
   // be continued only by a season, part or film mark: "From" is not "From Old Country Bumpkin…".
@@ -1031,9 +1032,16 @@
       n.all = [n.uk, n.original, n.en, n.ru, n.romaji].concat(n.alts || []).filter(function (t, i, a) { return t && a.indexOf(t) === i; });
       done(namesCache[key] = n);
     }
-    if (!movie.id || movie.source && movie.source !== 'tmdb') return finish();
+    // A card from another catalogue (a community list) may carry TMDB's number too: it counts only if
+    // TMDB's original name for that number is the card's.
+    var own = !movie.source || movie.source === 'tmdb';
+    if (!movie.id || !own && !/^\d+$/.test(String(movie.id))) return finish();
     var url = Lampa.TMDB.api((movie.name ? 'tv/' : 'movie/') + movie.id + '?api_key=' + Lampa.TMDB.key() + '&language=en-US&append_to_response=alternative_titles');
     new Lampa.Reguest().silent(url, function (json) {
+      if (!own) {
+        if (!json || plain(json.original_name || json.original_title) !== plain(n.original)) return finish();
+        n.tmdb = (movie.name ? 'tv:' : 'movie:') + movie.id;
+      }
       var alts = json && json.alternative_titles ? json.alternative_titles.results || json.alternative_titles.titles || [] : [];
       n.en = json && (json.name || json.title) || '';
       alts.forEach(function (a) {
