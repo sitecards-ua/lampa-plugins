@@ -1521,7 +1521,11 @@
   }
 
   var BUTTON = '<div class="full-start__button selector view--cs-anitube">' +
-    '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg><span>Кіно UA</span></div>';
+    // A film strip in our colours with a play mark; fixed colours, so it reads the same with and without focus.
+    '<svg viewBox="0 0 24 24" width="24" height="24"><rect x="1" y="3" width="22" height="18" rx="3" style="fill:#ffd700"/>' +
+    '<rect x="6" y="3" width="12" height="18" style="fill:#0057b7"/>' +
+    '<path d="M2.5 5.5h2v2.5h-2zM2.5 10.75h2v2.5h-2zM2.5 16h2v2.5h-2zM19.5 5.5h2v2.5h-2zM19.5 10.75h2v2.5h-2zM19.5 16h2v2.5h-2z" style="fill:#0d2d52"/>' +
+    '<path d="M9.5 8l6 4-6 4z" style="fill:#fff"/></svg><span>Кіно UA</span></div>';
   function addButton(e) {
     if (e.type !== 'complite') return;
     try {
