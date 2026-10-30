@@ -774,14 +774,19 @@
         var list = [], seen = {};
         (((data && data.result) || {}).players || []).forEach(function (p) {
           function provider(pattern) { return (p.providers || []).filter(function (v) { return pattern.test(v.name) && v.episodes && v.episodes.length; })[0]; }
-          // Tortuga where there is one, else ASHDI (the TV's own player).
-          var tortuga = provider(/^tortuga/i), chosen = tortuga || provider(/^ashdi/i);
+          // Prefer Tortuga per episode, then fill gaps with ASHDI (the TV's own player).
+          var tortuga = provider(/^tortuga/i), ashdi = provider(/^ashdi/i);
           var team = ((p.team && p.team.name) || 'Mikai') + (p.isSubs ? ' (субтитри)' : '');
-          if (!chosen || seen[team]) return;
+          if ((!tortuga && !ashdi) || seen[team]) return;
           seen[team] = true;
-          list.push({title: team, subs: !!p.isSubs, episodes: inOrder(chosen.episodes.map(function (e) {
-            return {title: e.number + ' серія', number: e.number, page: e.playLink, ashdi: !tortuga};
-          }))});
+          var episodes = [];
+          [tortuga, ashdi].forEach(function (player) {
+            if (!player) return;
+            player.episodes.forEach(function (e) {
+              if (e.playLink) episodes.push({title: e.number + ' серія', number: e.number, page: e.playLink, ashdi: player === ashdi});
+            });
+          });
+          if (episodes.length) list.push({title: team, subs: !!p.isSubs, episodes: inOrder(episodes)});
         });
         done(null, list.sort(bySubs));
       });
@@ -1010,7 +1015,7 @@
       // Kana, kanji and hangul stay: an original Japanese name is often the only one to match.
       .replace(/[^0-9a-zа-яіїєґё぀-ヿ㐀-鿿가-힯]+/g, ' ').trim();
   }
-  // Equal names, or one continuing the other ("Магічна битва" — "Магічна битва 0"). A one-word name may
+  // Equal names, or one continuing the other ("Магічна битва" — "Магічна битва 0"). A shorter name may
   // be continued only by a season, part or film mark: "From" is not "From Old Country Bumpkin…".
   var SEQUEL = /^(\d+|[ivx]+|сезон|season|частина|часть|part|фільм|фильм|film|movie|the movie|tv|ova|ona|special|спешл)( |$)/;
   function sameName(a, b) {
@@ -1019,7 +1024,7 @@
     if (a === b) return true;
     var short = a.length < b.length ? a : b, long = short === a ? b : a;
     if (long.indexOf(short + ' ') !== 0) return false;
-    return short.indexOf(' ') > 0 || SEQUEL.test(long.slice(short.length + 1));
+    return SEQUEL.test(long.slice(short.length + 1));
   }
   function matches(result, movie, names) {
     // Found by the card's own TMDB number.
@@ -1048,7 +1053,7 @@
   // English one and the alternative titles (Russian ones for the Russian sites, romaji for AnimeLib).
   var namesCache = {};
   function cardNames(movie, done) {
-    var key = (movie.name ? 'tv' : 'movie') + movie.id;
+    var key = JSON.stringify([movie.source || 'tmdb', movie.name ? 'tv' : 'movie', movie.id, movie.name || movie.title, movie.original_name || movie.original_title]);
     if (namesCache[key]) return done(namesCache[key]);
     var n = {uk: movie.title || movie.name, original: movie.original_title || movie.original_name, en: '', ru: '', romaji: '', all: [],
       tmdb: movie.id && (!movie.source || movie.source === 'tmdb') ? (movie.name ? 'tv:' : 'movie:') + movie.id : ''};
@@ -1063,7 +1068,7 @@
     var url = Lampa.TMDB.api((movie.name ? 'tv/' : 'movie/') + movie.id + '?api_key=' + Lampa.TMDB.key() + '&language=en-US&append_to_response=alternative_titles');
     new Lampa.Reguest().silent(url, function (json) {
       if (!own) {
-        if (!json || plain(json.original_name || json.original_title) !== plain(n.original)) return finish();
+        if (!plain(n.original) || !json || plain(json.original_name || json.original_title) !== plain(n.original)) return finish();
         n.tmdb = (movie.name ? 'tv:' : 'movie:') + movie.id;
       }
       var alts = json && json.alternative_titles ? json.alternative_titles.results || json.alternative_titles.titles || [] : [];
@@ -1137,7 +1142,7 @@
     var name = movie.title || movie.name || '';
     var source = ANITUBE, titles = [], voices = [], titleIndex = 0, voiceIndex = 0, last = null, tmdb = {};
     var saved = (Lampa.Storage.get(CHOICE_KEY, '{}') || {})[movie.id] || {};
-    var avail = {}, destroyed = false;
+    var avail = {}, destroyed = false, manualSearch = false;
 
     function remember() {
       var all = Lampa.Storage.get(CHOICE_KEY, '{}') || {};
@@ -1186,16 +1191,16 @@
       // waits for those before it. found[i]: undefined — not answered yet, null — no title, else its titles.
       var shown = false, found = [], next = 0, left = order.length, WORKERS = 4;
       function show() {
-        if (shown || destroyed) return;
+        if (shown || destroyed || manualSearch) return;
         for (var k = 0; k < order.length; k++) {
           if (found[k] === undefined) return;
-          if (found[k]) { shown = true; source = order[k]; _this.useTitles(found[k]); return; }
+          if (found[k]) { shown = true; source = order[k]; _this.useTitles(found[k].titles, found[k].index); return; }
         }
       }
       function finished() {
         if (--left || destroyed) return;
         log('availability ' + SOURCES.map(function (s) { return s.name + ':' + availText(s); }).join(', '));
-        if (shown) return;
+        if (shown || manualSearch) return;
         source = order[0];
         _this.buildFilter();
         _this.empty('Немає «' + name + '» ні на ' + SOURCES.map(function (s) { return s.title; }).join(', ') +
@@ -1205,6 +1210,8 @@
         if (destroyed || next >= order.length) return;
         var i = next++, src = order[i];
         function settled(state) {
+          if (!found[i]) found[i] = null;
+          show();
           avail[src.name] = state;
           if (!destroyed) { _this.buildFilter(); refreshMenu(src); }
           finished();
@@ -1212,10 +1219,23 @@
         }
         avail[src.name] = {state: 'wait'};
         _this.collect(src, null, function (all, sure, failed) {
-          found[i] = sure.length ? sure : null;
-          show();
           if (!sure.length) return settled({state: failed ? 'error' : 'no', error: failed});
-          probe(src, sure, settled);
+          var sorted = sortTitles(sure);
+          if (src === chosen) {
+            for (var j = 0; j < sorted.length; j++) {
+              if (String(sorted[j].id) === saved.title) { sorted.unshift(sorted.splice(j, 1)[0]); break; }
+            }
+          }
+          (function candidate(k) {
+            probe(src, sorted[k], sure, function () {
+              found[i] = {titles: sure, index: sure.indexOf(sorted[k])};
+              show();
+            }, function (state) {
+              if (state.state === 'yes') return settled(state);
+              if (!destroyed && k + 1 < sorted.length) return candidate(k + 1);
+              settled(state);
+            });
+          }(0));
         });
       }
       for (var w = 0; w < WORKERS; w++) worker();
@@ -1233,9 +1253,12 @@
     }
     function distinct(list) { var seen = {}, n = 0; list.forEach(function (v) { if (!seen[v.title]) { seen[v.title] = true; n++; } }); return n; }
     // The first title (season order, as useTitles), its voice-overs and the first one's best quality.
-    function probe(src, sure, done) {
-      var first = sure.slice().sort(function (a, b) { return a.season - b.season || (b.exact ? 1 : 0) - (a.exact ? 1 : 0) || a.order - b.order; })[0];
+    function sortTitles(list) {
+      return list.slice().sort(function (a, b) { return a.season - b.season || (b.exact ? 1 : 0) - (a.exact ? 1 : 0) || a.order - b.order; });
+    }
+    function probe(src, first, sure, ready, done) {
       src.voices(first, function (error, list) {
+        if (list) list = list.filter(function (v) { return v.episodes ? v.episodes.length : !!v.load; });
         if (error || !list || !list.length) return done({state: error ? 'error' : 'none', error: error});
         // The seasons the site has: those its voice-overs carry (all seasons under one title) or those of
         // its titles (a title per season).
@@ -1245,11 +1268,18 @@
         function yes(quality) { return {state: 'yes', voices: distinct(list), quality: quality, seasons: movie.name ? seasons : []}; }
         // A voice-over whose episode will not play here (UAFlix's ASHDI-only season) says nothing of the
         // quality: up to three are tried.
+        var hasEpisodes = false;
         (function voice(k) {
-          if (k >= Math.min(list.length, 3)) return done(yes(''));
+          if (k >= list.length || hasEpisodes && k >= 3) return done(hasEpisodes ? yes('') : {state: 'none'});
           function episodes(ready) { if (list[k].episodes) return ready(null, list[k].episodes); list[k].load(ready); }
           episodes(function (error, eps) {
-            if (error || !eps || !eps.length) return voice(k + 1);
+            if (error || !eps || !eps.length) { list.splice(k, 1); return voice(k); }
+            list[k].episodes = eps;
+            if (!hasEpisodes) {
+              hasEpisodes = true;
+              first.probedVoices = list.slice();
+              ready();
+            }
             qualityOf(src, eps[0], function (label) {
               if (!label) return voice(k + 1);
               done(yes(label));
@@ -1304,11 +1334,13 @@
     };
 
     this.look = function (src, query) {
+      manualSearch = true;
       source = src;
       this.reset();
       this.buildFilter();
       this.activity.loader(true);
       this.collect(src, query, function (all, sure, failed) {
+        if (destroyed || source !== src) return;
         if (sure.length) return _this.useTitles(sure);
         if (query && all.length === 1) return _this.useTitles(all, 0);
         if (query && all.length) return _this.similars(all);
@@ -1318,7 +1350,7 @@
 
     this.useTitles = function (list, index) {
       // Seasons in order; within one, the title named exactly like the card before spin-offs.
-      titles = list.slice().sort(function (a, b) { return a.season - b.season || (b.exact ? 1 : 0) - (a.exact ? 1 : 0) || a.order - b.order; });
+      titles = sortTitles(list);
       // A picked result stays picked; otherwise the one chosen before for this card, or the first season.
       titleIndex = index === undefined ? 0 : titles.indexOf(list[index]);
       if (index === undefined) titles.forEach(function (t, n) { if (String(t.id) === saved.title) titleIndex = n; });
@@ -1342,7 +1374,9 @@
     this.loadVoices = function () {
       this.reset();
       this.activity.loader(true);
-      source.voices(titles[titleIndex], function (error, list) {
+      var title = titles[titleIndex], requested = source;
+      function loaded(error, list) {
+        if (destroyed || requested !== source || title !== titles[titleIndex]) return;
         voices = list || [];
         voiceIndex = 0;
         var found = false;
@@ -1356,7 +1390,9 @@
         if (!voices.length) return _this.empty('Тут немає плеєра MOON, а інші плеєри на цьому ТВ не працюють');
         remember();
         _this.draw();
-      });
+      }
+      if (title.probedVoices) loaded(null, title.probedVoices);
+      else source.voices(title, loaded);
     };
 
     this.buildFilter = function () {
