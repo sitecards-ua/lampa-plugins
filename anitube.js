@@ -480,7 +480,11 @@
             (season.episodes || []).forEach(function (ep) { if (!file && +ep.number === +e[1] && ep.file) file = ep.file; });
           });
         });
-      } else if (data.streams && data.streams[0]) file = data.streams[0].url;
+      } else {
+        // A /vod/N player may list other voice-overs too: the stream named with N is this one.
+        var id = /\/vod\/(\d+)/.exec(address);
+        (data.streams || []).forEach(function (st) { if (!file && st.url && (!id || st.url.indexOf('_' + id[1] + '/') > 0)) file = st.url; });
+      }
       done(file ? null : 'ASHDI не дав цю серію', file, null, true);
     });
   }
@@ -753,19 +757,22 @@
         if (error) return done(error);
         var list = [], seen = {};
         (((data && data.result) || {}).players || []).forEach(function (p) {
-          var tortuga = (p.providers || []).filter(function (v) { return /^tortuga/i.test(v.name); })[0];
+          function provider(pattern) { return (p.providers || []).filter(function (v) { return pattern.test(v.name) && v.episodes && v.episodes.length; })[0]; }
+          // Tortuga where there is one, else ASHDI (the TV's own player).
+          var tortuga = provider(/^tortuga/i), chosen = tortuga || provider(/^ashdi/i);
           var team = ((p.team && p.team.name) || 'Mikai') + (p.isSubs ? ' (субтитри)' : '');
-          if (!tortuga || !tortuga.episodes || !tortuga.episodes.length || seen[team]) return;
+          if (!chosen || seen[team]) return;
           seen[team] = true;
-          list.push({title: team, subs: !!p.isSubs, episodes: tortuga.episodes.map(function (e) {
-            return {title: e.number + ' серія', number: e.number, page: e.playLink};
-          }).sort(function (a, b) { return a.number - b.number; })});
+          list.push({title: team, subs: !!p.isSubs, episodes: inOrder(chosen.episodes.map(function (e) {
+            return {title: e.number + ' серія', number: e.number, page: e.playLink, ashdi: !tortuga};
+          }))});
         });
         done(null, list.sort(bySubs));
       });
     },
     queries: function (n) { return [n.uk, n.en, n.romaji]; },
     stream: function (episode, done) {
+      if (episode.ashdi) return ashdiStream(episode.page, done);
       tortugaFile(episode.page, function (error, file) {
         var v = !error && tortugaVoices(file, 'Mikai')[0];
         if (!v) return done(error || 'Tortuga не дав відео');
@@ -977,7 +984,8 @@
     native: true,
     stream: function (episode, done) { done(null, episode.file, null); }
   };
-  var SOURCES = [ANITUBE, ANIMEON, MIKAI, ANIMELIB, YUMMY, YANI, UAFLIX, ENEYIDA, UASERIALS, MAKHNO, MOVIESTAPE, SERIALNO, BAMBOO, UNIMAY, UFDUB];
+  // The order a title's site is chosen in: Ukrainian ones in 1080p first, the Russian ones (Kodik: 720p at most) last.
+  var SOURCES = [ANITUBE, ANIMEON, MIKAI, UAFLIX, ENEYIDA, UASERIALS, MAKHNO, MOVIESTAPE, SERIALNO, BAMBOO, UNIMAY, UFDUB, ANIMELIB, YUMMY, YANI];
 
   // Sites search descriptions too, so a result counts only when one of its names matches the card's and its
   // year fits: a film within a year, a series from its first year on (later seasons come later).
@@ -1340,7 +1348,9 @@
       // SOURCES order.
       var rank = {yes: 0, wait: 1, none: 2, error: 3, no: 4};
       function rankOf(s) { var a = avail[s.name]; return a ? rank[a.state] : 1; }
-      var listed = SOURCES.map(function (s, i) { return {s: s, i: i}; }).sort(function (a, b) { return rankOf(a.s) - rankOf(b.s) || a.i - b.i; });
+      // Among those that have it, the better quality first; an unknown one (ASHDI, MP4: often 1080p) above 720p.
+      function height(s) { var a = avail[s.name]; return a && a.state === 'yes' ? qualityRank(a.quality) || 900 : 0; }
+      var listed = SOURCES.map(function (s, i) { return {s: s, i: i}; }).sort(function (a, b) { return rankOf(a.s) - rankOf(b.s) || height(b.s) - height(a.s) || a.i - b.i; });
       // A Ukrainian flag by the sites that have the title in Ukrainian (all but the Russian ones). Lampa puts
       // the title into its template as HTML; a drawn box, since colour emoji are not to be relied on here.
       filter.set('sort', listed.map(function (x) {
