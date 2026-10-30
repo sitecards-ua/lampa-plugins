@@ -1535,10 +1535,14 @@
       button.on('hover:enter', function () {
         Lampa.Activity.push({url: '', title: 'Кіно UA', component: 'cs_anitube', movie: movie, page: 1});
       });
-      // First in the row. Other plugins add their buttons later and in varying order, so it is put back.
-      var row = render.find('.full-start-new__buttons, .full-start__buttons').first();
-      function toFront() { if (row.children().first()[0] !== button[0]) row.prepend(button); }
-      toFront();
+      // First in the row. Other plugins add their buttons later, and one rebuilds the row from copies: so
+      // whichever copy is on the page now is moved, and nothing is inserted a second time.
+      var row = render.find('.full-start-new__buttons, .full-start__buttons').first(), first = row.children('.selector').first();
+      if (first.length) first.before(button); else row.append(button);
+      function toFront() {
+        var now = render.find('.view--cs-anitube').first();
+        if (now.length && now.prev().length) now.parent().prepend(now);
+      }
       [300, 1000, 2500].forEach(function (ms) { setTimeout(toFront, ms); });
     } catch (error) { log('button ' + error); }
   }
