@@ -71,18 +71,12 @@
   // MOON's HLS master (served by our helper) → done(error, best variant, {"1080p": url, …}) for Lampa's
   // player: it starts at the best quality instead of hls.js's guess, and offers the others.
   function moonVariants(page, done) {
-    var master = moonStream(page);
-    if (!master) return done('серія без плеєра MOON');
-    request(master, function (error, text) {
-      if (error) return done(error);
-      var lines = String(text).split(/\r?\n/), qualities = {}, best = 0, url = '';
-      lines.forEach(function (line, i) {
-        var m = /^#EXT-X-STREAM-INF:.*RESOLUTION=\d+x(\d+)/.exec(line), next = lines[i + 1];
-        if (!m || !/^https?:\/\//.test(next || '')) return;
-        qualities[qualityName(+m[1])] = next;
-        if (+m[1] > best) { best = +m[1]; url = next; }
-      });
-      done(null, url || master, url ? qualities : null);
+    if (!moonStream(page)) return done('серія без плеєра MOON');
+    // The helper reads the signed address out of the page; the playlist is read here, since the certificate
+    // of its server (s.moonanime.net) is one the helper's old Node does not accept.
+    getJson(HELPER + '/moon/stream?url=' + encodeURIComponent(page), function (error, data) {
+      if (error || !data || !data.url) return done(error || 'MOON не дав відео');
+      hlsVariants(data.url, done);
     });
   }
   function bySubs(a, b) { return a.subs - b.subs; }
