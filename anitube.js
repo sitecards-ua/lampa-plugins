@@ -1542,6 +1542,8 @@
       function toFront() {
         var now = render.find('.view--cs-anitube').first();
         if (now.length && now.prev().length) now.parent().prepend(now);
+        // It looks focused, but Lampa may still hold the element the copy replaced: OK would do nothing.
+        if (now.hasClass('focus')) { try { Navigator.focus(now[0]); } catch (error) { log('focus ' + error); } }
       }
       [300, 1000, 2500].forEach(function (ms) { setTimeout(toFront, ms); });
     } catch (error) { log('button ' + error); }
